@@ -51,6 +51,124 @@ function QtyBadge({ qty, color = "#1e3a5f" }) {
   );
 }
 
+// Vista de reparto: sirve para Reparto (con botones) y para vendedores/admin (soloLectura controla los botones)
+function RepartoView({ soloLectura = false }) {
+  const [orders, setOrders] = useState([]);
+  const [tab, setTab] = useState("pendiente");
+  const [loading, setLoading] = useState(true);
+  const [modalOrder, setModalOrder] = useState(null);
+  const [fechaSel, setFechaSel] = useState("");
+  const [transporteSel, setTransporteSel] = useState("");
+  const [showTransporte, setShowTransporte] = useState(null);
+  const [busca, setBusca] = useState("");
+  const color = "#e65100";
+
+  const refresh = useCallback(async()=>{
+    try{const o=await apiGet({action:"getPedidos"});if(Array.isArray(o))setOrders(o);}catch(e){console.error(e);}
+    setLoading(false);
+  },[]);
+  useEffect(()=>{refresh();const t=setInterval(refresh,10000);return()=>clearInterval(t);},[refresh]);
+
+  const facturados = orders.filter(o=>["facturado","en_reparto","programado","entregado"].includes(o.estado)||o.estadoReparto);
+
+  // Si hay búsqueda, filtra por parte del nombre del cliente sobre TODAS las categorías
+  const q = busca.trim().toLowerCase();
+  const buscando = q.length > 0;
+  const porBusqueda = facturados.filter(o=>String(o.cliente||"").toLowerCase().includes(q));
+
+  const porTab = tab==="pendiente"?facturados.filter(o=>!o.estadoReparto||o.estadoReparto==="")
+    :tab==="en_reparto"?facturados.filter(o=>o.estadoReparto==="en_reparto")
+    :tab==="programado"?facturados.filter(o=>o.estadoReparto==="programado")
+    :facturados.filter(o=>o.estadoReparto==="entregado");
+
+  const filtered = buscando ? porBusqueda : porTab;
+
+  const updReparto = async(id,estadoReparto,fechaReparto="",transporte="")=>{
+    setOrders(prev=>prev.map(o=>o.id===id?{...o,estadoReparto,fechaReparto,transporte}:o));
+    await apiPost("updReparto",{id,estadoReparto,fechaReparto,transporte});
+    setModalOrder(null); setShowTransporte(null); setTransporteSel("");
+  };
+
+  const handleEntregado = (o) => { setShowTransporte(o); setTransporteSel(""); };
+
+  const counts = {
+    pendiente:facturados.filter(o=>!o.estadoReparto||o.estadoReparto==="").length,
+    en_reparto:facturados.filter(o=>o.estadoReparto==="en_reparto").length,
+    programado:facturados.filter(o=>o.estadoReparto==="programado").length,
+    entregado:facturados.filter(o=>o.estadoReparto==="entregado").length,
+  };
+
+  if(loading) return <Loader/>;
+
+  return (
+    <div>
+      <div style={{padding:"0 0 12px"}}>
+        <input value={busca} onChange={e=>setBusca(e.target.value)} placeholder="🔍 Buscar cliente (nombre o parte)..." style={{...iS,marginBottom:0}}/>
+      </div>
+      {!buscando && (
+        <div style={{display:"flex",background:"#fff",borderBottom:"2px solid #e8edf5",overflowX:"auto",marginBottom:12,borderRadius:8}}>
+          {[{k:"pendiente",label:`📋 Sin asignar (${counts.pendiente})`},{k:"en_reparto",label:`🚚 En reparto (${counts.en_reparto})`},{k:"programado",label:`📅 Programado (${counts.programado})`},{k:"entregado",label:`✅ Entregado (${counts.entregado})`}].map(t=>(
+            <button key={t.k} onClick={()=>setTab(t.k)} style={{flex:"0 0 auto",padding:"11px 14px",border:"none",background:"transparent",borderBottom:tab===t.k?`3px solid ${color}`:"3px solid transparent",color:tab===t.k?color:"#888",fontWeight:tab===t.k?700:400,cursor:"pointer",fontSize:12,whiteSpace:"nowrap"}}>{t.label}</button>
+          ))}
+        </div>
+      )}
+      {buscando && <p style={{fontSize:12,color:"#888",margin:"0 0 10px"}}>Mostrando {filtered.length} resultado(s) para "{busca}"</p>}
+      {filtered.length===0&&<p style={{color:"#888",textAlign:"center",paddingTop:20}}>{buscando?"No se encontró ese cliente":"No hay pedidos en esta categoría"}</p>}
+      {filtered.map(o=>(
+        <div key={o.id} style={{...cd,borderLeft:`4px solid ${o.estadoReparto==="entregado"?"#43a047":o.estadoReparto==="en_reparto"?"#e65100":o.estadoReparto==="programado"?"#1565c0":"#999"}`}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+            <div><b style={{fontSize:15}}>{o.cliente}</b>
+              <div style={{fontSize:12,color:"#888"}}>{o.vendedor} · {o.fecha}</div>
+            </div>
+            <RepartoBadge estadoReparto={o.estadoReparto} fechaReparto={o.fechaReparto} transporte={o.transporte}/>
+          </div>
+          <div style={{marginTop:6,fontSize:12}}>
+            {o.items&&o.items.slice(0,8).map((i,idx)=>(
+              <div key={idx} style={{display:"flex",alignItems:"center",justifyContent:"space-between",color:"#555",padding:"3px 0"}}>
+                <span style={{flex:1,minWidth:0,wordBreak:"break-word"}}>{i.nombre}</span>
+                <QtyBadge qty={i.qty} color={color}/>
+              </div>
+            ))}
+            {o.items&&o.items.length>8&&<div style={{color:"#aaa"}}>y {o.items.length-8} más...</div>}
+          </div>
+          <b style={{color,display:"block",marginTop:6}}>Total: ${Number(o.total).toLocaleString("es-AR")}</b>
+          {!soloLectura && (
+            <div style={{display:"flex",gap:8,marginTop:10,flexWrap:"wrap"}}>
+              <button onClick={()=>updReparto(o.id,"en_reparto")} style={{...sB,flex:1,background:o.estadoReparto==="en_reparto"?"#e65100":"#e8edf5",color:o.estadoReparto==="en_reparto"?"#fff":"#555"}}>🚚 En reparto</button>
+              <button onClick={()=>setModalOrder(o)} style={{...sB,flex:1,background:o.estadoReparto==="programado"?"#1565c0":"#e8edf5",color:o.estadoReparto==="programado"?"#fff":"#555"}}>📅 Programar</button>
+              <button onClick={()=>handleEntregado(o)} style={{...sB,flex:1,background:o.estadoReparto==="entregado"?"#43a047":"#e8edf5",color:o.estadoReparto==="entregado"?"#fff":"#555"}}>✅ Entregado</button>
+            </div>
+          )}
+        </div>
+      ))}
+      {modalOrder&&(
+        <Modal onClose={()=>setModalOrder(null)}>
+          <h3 style={{marginTop:0,color:"#1565c0"}}>📅 Programar entrega</h3>
+          <p style={{fontWeight:700}}>{modalOrder.cliente}</p>
+          <label style={lb}>Día de entrega</label>
+          <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:16}}>
+            {DIAS.map(d=><button key={d} onClick={()=>setFechaSel(d)} style={{padding:"10px 14px",borderRadius:10,border:"none",cursor:"pointer",background:fechaSel===d?"#1565c0":"#e8edf5",color:fechaSel===d?"#fff":"#555",fontWeight:fechaSel===d?700:400,fontSize:13}}>{d}</button>)}
+          </div>
+          <button onClick={()=>fechaSel&&updReparto(modalOrder.id,"programado",fechaSel)} disabled={!fechaSel} style={bP("#1565c0")}>Confirmar</button>
+          <button onClick={()=>setModalOrder(null)} style={{...bP("#888"),marginTop:8}}>Cancelar</button>
+        </Modal>
+      )}
+      {showTransporte&&(
+        <Modal onClose={()=>setShowTransporte(null)}>
+          <h3 style={{marginTop:0,color:"#43a047"}}>✅ Confirmar entrega</h3>
+          <p style={{fontWeight:700}}>{showTransporte.cliente}</p>
+          <label style={lb}>Transporte</label>
+          <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:16}}>
+            {TRANSPORTES.map(t=><button key={t} onClick={()=>setTransporteSel(t)} style={{flex:1,padding:"12px 0",borderRadius:10,border:"none",cursor:"pointer",background:transporteSel===t?"#43a047":"#e8edf5",color:transporteSel===t?"#fff":"#555",fontWeight:transporteSel===t?700:400,fontSize:14}}>{t}</button>)}
+          </div>
+          <button onClick={()=>transporteSel&&updReparto(showTransporte.id,"entregado","",transporteSel)} disabled={!transporteSel} style={bP("#43a047")}>Confirmar entrega</button>
+          <button onClick={()=>setShowTransporte(null)} style={{...bP("#888"),marginTop:8}}>Cancelar</button>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
 function FormPedido({ vendedorName, products, stock, color, onSaved }) {
   const [syncing, setSyncing] = useState(false);
   const [cliente, setCliente] = useState("");
@@ -172,7 +290,6 @@ function FormPedido({ vendedorName, products, stock, color, onSaved }) {
     </div>
   );
 }
-
 function VendedorApp({ user, onLogout }) {
   const [tab, setTab] = useState("nuevo");
   const [orders, setOrders] = useState([]);
@@ -204,9 +321,10 @@ function VendedorApp({ user, onLogout }) {
   return (
     <div style={{maxWidth:500,margin:"0 auto",fontFamily:"sans-serif",background:"#f4f6fb",minHeight:"100vh"}}>
       <Header user={user} onLogout={onLogout}/>
-      <Tabs tabs={["nuevo","mis-pedidos","precios"]} labels={["➕ Nuevo",`📋 Mis (${myOrders.length})`,"💲 Precios"]} active={tab} onChange={setTab} color={color}/>
+      <Tabs tabs={["nuevo","mis-pedidos","reparto","precios"]} labels={["➕ Nuevo",`📋 Mis (${myOrders.length})`,"🚚 Reparto","💲 Precios"]} active={tab} onChange={setTab} color={color}/>
       <div style={{padding:16}}>
         {tab==="nuevo"&&<FormPedido vendedorName={user.name} products={products} stock={stock} color={color} onSaved={refresh}/>}
+        {tab==="reparto"&&<RepartoView soloLectura={true}/>}
         {tab==="mis-pedidos"&&(
           <div>
             {myOrders.length===0&&<p style={{color:"#888",textAlign:"center"}}>No tenés pedidos aún</p>}
@@ -251,105 +369,14 @@ function VendedorApp({ user, onLogout }) {
     </div>
   );
 }
+
 function RepartidorApp({ user, onLogout }) {
-  const [orders, setOrders] = useState([]);
-  const [tab, setTab] = useState("pendiente");
-  const [loading, setLoading] = useState(true);
-  const [modalOrder, setModalOrder] = useState(null);
-  const [fechaSel, setFechaSel] = useState("");
-  const [transporteSel, setTransporteSel] = useState("");
-  const [showTransporte, setShowTransporte] = useState(null);
-  const color = "#e65100";
-
-  const refresh = useCallback(async()=>{
-    try{const o=await apiGet({action:"getPedidos"});if(Array.isArray(o))setOrders(o);}catch(e){console.error(e);}
-    setLoading(false);
-  },[]);
-  useEffect(()=>{refresh();const t=setInterval(refresh,10000);return()=>clearInterval(t);},[refresh]);
-
-  const facturados = orders.filter(o=>["facturado","en_reparto","programado","entregado"].includes(o.estado)||o.estadoReparto);
-  const filtered = tab==="pendiente"?facturados.filter(o=>!o.estadoReparto||o.estadoReparto==="")
-    :tab==="en_reparto"?facturados.filter(o=>o.estadoReparto==="en_reparto")
-    :tab==="programado"?facturados.filter(o=>o.estadoReparto==="programado")
-    :facturados.filter(o=>o.estadoReparto==="entregado");
-
-  const updReparto = async(id,estadoReparto,fechaReparto="",transporte="")=>{
-    setOrders(prev=>prev.map(o=>o.id===id?{...o,estadoReparto,fechaReparto,transporte}:o));
-    await apiPost("updReparto",{id,estadoReparto,fechaReparto,transporte});
-    setModalOrder(null); setShowTransporte(null); setTransporteSel("");
-  };
-
-  const handleEntregado = (o) => { setShowTransporte(o); setTransporteSel(""); };
-
-  const counts = {
-    pendiente:facturados.filter(o=>!o.estadoReparto||o.estadoReparto==="").length,
-    en_reparto:facturados.filter(o=>o.estadoReparto==="en_reparto").length,
-    programado:facturados.filter(o=>o.estadoReparto==="programado").length,
-    entregado:facturados.filter(o=>o.estadoReparto==="entregado").length,
-  };
-
-  if(loading) return <Loader/>;
-
   return (
     <div style={{maxWidth:500,margin:"0 auto",fontFamily:"sans-serif",background:"#f4f6fb",minHeight:"100vh"}}>
       <Header user={user} onLogout={onLogout}/>
-      <div style={{display:"flex",background:"#fff",borderBottom:"2px solid #e8edf5",overflowX:"auto"}}>
-        {[{k:"pendiente",label:`📋 Sin asignar (${counts.pendiente})`},{k:"en_reparto",label:`🚚 En reparto (${counts.en_reparto})`},{k:"programado",label:`📅 Programado (${counts.programado})`},{k:"entregado",label:`✅ Entregado (${counts.entregado})`}].map(t=>(
-          <button key={t.k} onClick={()=>setTab(t.k)} style={{flex:"0 0 auto",padding:"11px 14px",border:"none",background:"transparent",borderBottom:tab===t.k?`3px solid ${color}`:"3px solid transparent",color:tab===t.k?color:"#888",fontWeight:tab===t.k?700:400,cursor:"pointer",fontSize:12,whiteSpace:"nowrap"}}>{t.label}</button>
-        ))}
-      </div>
       <div style={{padding:16}}>
-        {filtered.length===0&&<p style={{color:"#888",textAlign:"center",paddingTop:20}}>No hay pedidos en esta categoría</p>}
-        {filtered.map(o=>(
-          <div key={o.id} style={{...cd,borderLeft:`4px solid ${o.estadoReparto==="entregado"?"#43a047":o.estadoReparto==="en_reparto"?"#e65100":o.estadoReparto==="programado"?"#1565c0":"#999"}`}}>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
-              <div><b style={{fontSize:15}}>{o.cliente}</b>
-                <div style={{fontSize:12,color:"#888"}}>{o.vendedor} · {o.fecha}</div>
-              </div>
-              <RepartoBadge estadoReparto={o.estadoReparto} fechaReparto={o.fechaReparto} transporte={o.transporte}/>
-            </div>
-            <div style={{marginTop:6,fontSize:12}}>
-              {o.items&&o.items.slice(0,8).map((i,idx)=>(
-                <div key={idx} style={{display:"flex",alignItems:"center",justifyContent:"space-between",color:"#555",padding:"3px 0"}}>
-                  <span style={{flex:1,minWidth:0,wordBreak:"break-word"}}>{i.nombre}</span>
-                  <QtyBadge qty={i.qty} color={color}/>
-                </div>
-              ))}
-              {o.items&&o.items.length>8&&<div style={{color:"#aaa"}}>y {o.items.length-8} más...</div>}
-            </div>
-            <b style={{color,display:"block",marginTop:6}}>Total: ${Number(o.total).toLocaleString("es-AR")}</b>
-            <div style={{display:"flex",gap:8,marginTop:10,flexWrap:"wrap"}}>
-              <button onClick={()=>updReparto(o.id,"en_reparto")} style={{...sB,flex:1,background:o.estadoReparto==="en_reparto"?"#e65100":"#e8edf5",color:o.estadoReparto==="en_reparto"?"#fff":"#555"}}>🚚 En reparto</button>
-              <button onClick={()=>setModalOrder(o)} style={{...sB,flex:1,background:o.estadoReparto==="programado"?"#1565c0":"#e8edf5",color:o.estadoReparto==="programado"?"#fff":"#555"}}>📅 Programar</button>
-              <button onClick={()=>handleEntregado(o)} style={{...sB,flex:1,background:o.estadoReparto==="entregado"?"#43a047":"#e8edf5",color:o.estadoReparto==="entregado"?"#fff":"#555"}}>✅ Entregado</button>
-            </div>
-          </div>
-        ))}
+        <RepartoView soloLectura={false}/>
       </div>
-      {modalOrder&&(
-        <Modal onClose={()=>setModalOrder(null)}>
-          <h3 style={{marginTop:0,color:"#1565c0"}}>📅 Programar entrega</h3>
-          <p style={{fontWeight:700}}>{modalOrder.cliente}</p>
-          <label style={lb}>Día de entrega</label>
-          <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:16}}>
-            {DIAS.map(d=><button key={d} onClick={()=>setFechaSel(d)} style={{padding:"10px 14px",borderRadius:10,border:"none",cursor:"pointer",background:fechaSel===d?"#1565c0":"#e8edf5",color:fechaSel===d?"#fff":"#555",fontWeight:fechaSel===d?700:400,fontSize:13}}>{d}</button>)}
-          </div>
-          <button onClick={()=>fechaSel&&updReparto(modalOrder.id,"programado",fechaSel)} disabled={!fechaSel} style={bP("#1565c0")}>Confirmar</button>
-          <button onClick={()=>setModalOrder(null)} style={{...bP("#888"),marginTop:8}}>Cancelar</button>
-        </Modal>
-      )}
-      {showTransporte&&(
-        <Modal onClose={()=>setShowTransporte(null)}>
-          <h3 style={{marginTop:0,color:"#43a047"}}>✅ Confirmar entrega</h3>
-          <p style={{fontWeight:700}}>{showTransporte.cliente}</p>
-          <label style={lb}>Transporte</label>
-          <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:16}}>
-            {TRANSPORTES.map(t=><button key={t} onClick={()=>setTransporteSel(t)} style={{flex:1,padding:"12px 0",borderRadius:10,border:"none",cursor:"pointer",background:transporteSel===t?"#43a047":"#e8edf5",color:transporteSel===t?"#fff":"#555",fontWeight:transporteSel===t?700:400,fontSize:14}}>{t}</button>)}
-          </div>
-          <button onClick={()=>transporteSel&&updReparto(showTransporte.id,"entregado","",transporteSel)} disabled={!transporteSel} style={bP("#43a047")}>Confirmar entrega</button>
-          <button onClick={()=>setShowTransporte(null)} style={{...bP("#888"),marginTop:8}}>Cancelar</button>
-        </Modal>
-      )}
     </div>
   );
 }
@@ -484,9 +511,10 @@ function AdminApp({ user, onLogout }) {
   return (
     <div style={{maxWidth:700,margin:"0 auto",fontFamily:"sans-serif",background:"#f4f6fb",minHeight:"100vh"}}>
       <Header user={user} lastSync={lastSync} onLogout={onLogout}/>
-      <Tabs tabs={["pedidos","nuevo","articulos","stock"]} labels={[`📋 Pedidos${pendientes>0?` (${pendientes})`:""}`, "➕ Nuevo pedido","📦 Artículos","📊 Stock"]} active={tab} onChange={setTab} color={color}/>
+      <Tabs tabs={["pedidos","nuevo","reparto","articulos","stock"]} labels={[`📋 Pedidos${pendientes>0?` (${pendientes})`:""}`, "➕ Nuevo pedido","🚚 Reparto","📦 Artículos","📊 Stock"]} active={tab} onChange={setTab} color={color}/>
       <div style={{padding:16}}>
         {tab==="nuevo"&&<FormPedido vendedorName={user.name} products={products} stock={stock} color={color} onSaved={refresh}/>}
+        {tab==="reparto"&&<RepartoView soloLectura={false}/>}
         {tab==="pedidos"&&(
           <div>
             <div style={{display:"flex",gap:6,marginBottom:12,flexWrap:"wrap"}}>
