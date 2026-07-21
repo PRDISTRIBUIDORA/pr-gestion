@@ -201,7 +201,7 @@ function FormPedido({ vendedorName, products, stock, color, onSaved }) {
   };
 
   const txtWA = o => {
-    const lines = o.items.map(i=>`• ${i.nombre} x${i.qty} — $${(i.precio*i.qty).toLocaleString("es-AR")}`).join("\n");
+const lines = o.items.map(i=>`• *${i.qty}* - ${i.nombre} — $${(i.precio*i.qty).toLocaleString("es-AR")}`).join("\n");
     return `*${o.tipo.toUpperCase()} — ${o.cliente}*\n${o.urgente?"🔴 URGENTE":"🟢 Puede esperar"}\nVendedor: ${o.vendedor}\nFecha: ${o.fecha}\n${o.promo?`Promo: ${o.promo}\n`:""}\n${lines}\n\n*TOTAL: $${o.total.toLocaleString("es-AR")}*`;
   };
 
