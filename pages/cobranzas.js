@@ -79,12 +79,15 @@ function ClienteSearch({ clientes, value, onChange }) {
   const [q, setQ] = useState(value||"");
   const [open, setOpen] = useState(false);
   const ql = q.toLowerCase();
+  const qTrim = q.trim();
   const filtered = q.length > 0 ? clientes.filter(c =>
     String(c.nombre||"").toLowerCase().includes(ql) ||
     String(c.localidad||"").toLowerCase().includes(ql) ||
     String(c.codigo||"").includes(q)
   ).slice(0, 20) : [];
   const selected = clientes.find(c => c.nombre === value);
+  const exactMatch = qTrim && filtered.some(c => String(c.nombre||"").toLowerCase().trim() === qTrim.toLowerCase());
+  const usarLibre = () => { onChange(qTrim, "", ""); setQ(qTrim); setOpen(false); };
   return <div style={{position:"relative"}}>
     <input
       style={{...S.input, borderColor: value ? "#eab30860" : undefined}}
@@ -93,19 +96,23 @@ function ClienteSearch({ clientes, value, onChange }) {
       onFocus={()=>{ setOpen(true); setQ(""); }}
       onBlur={()=>setTimeout(()=>setOpen(false),200)}
       onChange={e=>{ setQ(e.target.value); setOpen(true); }}
+      onKeyDown={e=>{ if(e.key==="Enter" && qTrim && !exactMatch){ e.preventDefault(); usarLibre(); } }}
     />
     {value && !open && <div style={{fontSize:11,color:"#64748b",marginTop:3}}>{selected?.localidad}</div>}
-    {open && q.length > 0 && <div style={{position:"absolute",top:"100%",left:0,right:0,zIndex:200,background:"#1e2530",border:"1px solid rgba(255,255,255,.15)",borderRadius:8,maxHeight:200,overflowY:"auto",marginTop:2}}>
-      {filtered.length === 0
-        ? <div style={{padding:"10px 14px",color:"#475569",fontSize:13}}>Sin resultados</div>
-        : filtered.map(c => <div key={c.id}
-            onMouseDown={()=>{ onChange(c.nombre, c.localidad||"", c.codigo||""); setQ(c.nombre); setOpen(false); }}
-            style={{padding:"10px 14px",cursor:"pointer",borderBottom:"1px solid rgba(255,255,255,.05)",fontSize:13,color:"#fff"}}
-          >
-            <span style={{fontWeight:600}}>{c.nombre}</span>
-            <span style={{color:"#64748b",fontSize:11,marginLeft:8}}>{c.localidad}</span>
-          </div>)
-      }
+    {open && q.length > 0 && <div style={{position:"absolute",top:"100%",left:0,right:0,zIndex:200,background:"#1e2530",border:"1px solid rgba(255,255,255,.15)",borderRadius:8,maxHeight:240,overflowY:"auto",marginTop:2}}>
+      {filtered.map(c => <div key={c.id}
+          onMouseDown={()=>{ onChange(c.nombre, c.localidad||"", c.codigo||""); setQ(c.nombre); setOpen(false); }}
+          style={{padding:"10px 14px",cursor:"pointer",borderBottom:"1px solid rgba(255,255,255,.05)",fontSize:13,color:"#fff"}}
+        >
+          <span style={{fontWeight:600}}>{c.nombre}</span>
+          <span style={{color:"#64748b",fontSize:11,marginLeft:8}}>{c.localidad}</span>
+        </div>)}
+      {qTrim && !exactMatch && <div
+        onMouseDown={usarLibre}
+        style={{padding:"11px 14px",cursor:"pointer",fontSize:13,color:"#34d399",background:"#06522215",borderTop:filtered.length>0?"1px solid rgba(255,255,255,.08)":"none",fontWeight:700}}
+      >
+        ➕ Usar &quot;{qTrim}&quot; como nuevo cliente
+      </div>}
     </div>}
   </div>;
 }
@@ -355,6 +362,7 @@ function DeudoresTab({ isAdmin }) {
   const [search, setSearch] = useState("");
   const [verConAccion, setVerConAccion] = useState(false);
   const [modalCobro, setModalCobro] = useState(null);
+  const [modalVisita, setModalVisita] = useState(null);
   const [editCobro, setEditCobro] = useState(null);
   const [form, setForm] = useState({});
   const [saving, setSaving] = useState(false);
@@ -417,6 +425,21 @@ function DeudoresTab({ isAdmin }) {
     setModalCobro(cliente);
   };
 
+  const abrirVisita = (cliente) => {
+    setForm({ cliente:cliente.nombre, codigo:cliente.codigo, localidad:cliente.localidad||"", estado:"Visitado", cobrador:"", notas:"" });
+    setModalVisita(cliente);
+  };
+
+  const guardarVisita = async () => {
+    if (!form.cobrador || !form.estado) return;
+    setSaving(true);
+    try {
+      await apiPost({action:"addRow", sheet:"Visitas", data:{...form, fecha:today()}});
+      setModalVisita(null); await load();
+    } catch(e) { alert("Error: "+e.message); }
+    finally { setSaving(false); }
+  };
+
   const guardarCobro = async () => {
     if (!form.monto || !form.cobrador || !form.formaPago) return;
     setSaving(true);
@@ -471,9 +494,14 @@ function DeudoresTab({ isAdmin }) {
               <td style={S.td}><DiaBadge dias={c.dias} /></td>
               <td style={{...S.td,color:"#fbbf24",fontFamily:"monospace",fontWeight:700}}>{fmt(c.saldo)}</td>
               <td style={S.td}>
-                <button onClick={()=>abrirCobro(c)} style={{background:"#eab30820",color:"#fbbf24",border:"1px solid #eab30840",borderRadius:6,padding:"4px 10px",fontSize:11,cursor:"pointer",fontWeight:600}}>
-                  💰 Registrar cobro
-                </button>
+                <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
+                  <button onClick={()=>abrirCobro(c)} style={{background:"#eab30820",color:"#fbbf24",border:"1px solid #eab30840",borderRadius:6,padding:"4px 10px",fontSize:11,cursor:"pointer",fontWeight:600}}>
+                    💰 Cobro
+                  </button>
+                  <button onClick={()=>abrirVisita(c)} style={{background:"#38bdf820",color:"#38bdf8",border:"1px solid #38bdf840",borderRadius:6,padding:"4px 10px",fontSize:11,cursor:"pointer",fontWeight:600}}>
+                    📍 Visita
+                  </button>
+                </div>
               </td>
             </tr>)}
           </tbody>
@@ -540,7 +568,13 @@ function DeudoresTab({ isAdmin }) {
                 <td style={{...S.td,color:"#64748b",fontSize:12}}>{c.localidad||"—"}</td>
                 <td style={S.td}><DiaBadge dias={c.dias} /></td>
                 <td style={{...S.td,color:"#fbbf24",fontFamily:"monospace",fontWeight:700}}>{fmt(c.saldo)}</td>
-                <td style={S.td}><button onClick={()=>abrirCobro(c)} style={{background:"#eab30820",color:"#fbbf24",border:"1px solid #eab30840",borderRadius:6,padding:"4px 10px",fontSize:11,cursor:"pointer",fontWeight:600}}>💰 Registrar cobro</button></td>
+                <td style={{...S.td,color:"#fbbf24",fontFamily:"monospace",fontWeight:700}}>{fmt(c.saldo)}</td>
+                <td style={S.td}>
+                  <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
+                    <button onClick={()=>abrirCobro(c)} style={{background:"#eab30820",color:"#fbbf24",border:"1px solid #eab30840",borderRadius:6,padding:"4px 10px",fontSize:11,cursor:"pointer",fontWeight:600}}>💰 Cobro</button>
+                    <button onClick={()=>abrirVisita(c)} style={{background:"#38bdf820",color:"#38bdf8",border:"1px solid #38bdf840",borderRadius:6,padding:"4px 10px",fontSize:11,cursor:"pointer",fontWeight:600}}>📍 Visita</button>
+                  </div>
+                </td>
               </tr>)}
           </tbody>
         </table>
@@ -588,6 +622,30 @@ function DeudoresTab({ isAdmin }) {
       </div>
     </Modal>}
 
+    {modalVisita && <Modal title={`Registrar visita — ${modalVisita.nombre}`} onClose={()=>setModalVisita(null)}>
+      <div style={{...S.card,padding:"10px 14px",marginBottom:14,background:"#0c344922",border:"1px solid #38bdf833"}}>
+        <div style={{fontSize:12,color:"#94a3b8"}}>Cliente</div>
+        <div style={{marginTop:4,color:"#fff",fontWeight:600,fontSize:14}}>{modalVisita.nombre}</div>
+        <div style={{fontSize:12,color:"#64748b",marginTop:2}}>{modalVisita.localidad||"—"} · Saldo: {fmt(modalVisita.saldo)}</div>
+      </div>
+      <Field label="Estado *">
+        <select style={S.input} value={form.estado||"Visitado"} onChange={e=>setForm(p=>({...p,estado:e.target.value}))} autoFocus>
+          {ESTADOS_VISITA.map(e=><option key={e}>{e}</option>)}
+        </select>
+      </Field>
+      <Field label="Vendedor *">
+        <select style={S.input} value={form.cobrador||""} onChange={e=>setForm(p=>({...p,cobrador:e.target.value}))}>
+          <option value="">— Seleccionar —</option>
+          {COBRADORES.map(c=><option key={c}>{c}</option>)}
+        </select>
+      </Field>
+      <Field label="Notas"><textarea style={{...S.input,height:60,resize:"none"}} value={form.notas||""} onChange={e=>setForm(p=>({...p,notas:e.target.value}))} placeholder="Observaciones, compromisos de pago, etc." /></Field>
+      <div style={{display:"flex",gap:10}}>
+        <button style={{...S.btnGhost,flex:1}} onClick={()=>setModalVisita(null)}>Cancelar</button>
+        <button style={{...S.btnPri,flex:1,background:"#38bdf8",color:"#000"}} disabled={saving||!form.cobrador||!form.estado} onClick={guardarVisita}>{saving?"Guardando…":"Guardar visita"}</button>
+      </div>
+    </Modal>}
+
     {editCobro && <Modal title="Editar cobro" onClose={()=>setEditCobro(null)}>
       <Field label="Monto *"><input style={S.input} type="number" value={form.monto||""} onChange={e=>setForm(p=>({...p,monto:e.target.value}))} /></Field>
       <Field label="Forma de pago *">
@@ -622,12 +680,38 @@ function VisitasTab({ isAdmin }) {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [rv, rc] = await Promise.all([
+      const [rv, rc, rd] = await Promise.all([
         apiGet({action:"getData",sheet:"Visitas"}),
         apiGet({action:"getData",sheet:"Clientes"}),
+        apiGet({action:"getData",sheet:"Deudores"}),
       ]);
       setRows(Array.isArray(rv.data)?rv.data:[]);
-      setClientes(Array.isArray(rc.data)?rc.data:[]);
+      // Merge Clientes + Deudores para tener la lista completa en el buscador
+      const cli = Array.isArray(rc.data)?rc.data:[];
+      const deu = Array.isArray(rd.data)?rd.data:[];
+      const seenCodigos = new Set();
+      const seenNombres = new Set();
+      const normN = (n) => String(n||"").toLowerCase().trim();
+      const merged = [];
+      cli.forEach(c => {
+        const cod = c.codigo ? String(c.codigo) : "";
+        const nom = normN(c.nombre);
+        if (cod && seenCodigos.has(cod)) return;
+        if (!cod && nom && seenNombres.has(nom)) return;
+        if (cod) seenCodigos.add(cod);
+        if (nom) seenNombres.add(nom);
+        merged.push(c);
+      });
+      deu.forEach(d => {
+        const cod = d.codigo ? String(d.codigo) : "";
+        const nom = normN(d.nombre);
+        if (cod && seenCodigos.has(cod)) return;
+        if (!cod && nom && seenNombres.has(nom)) return;
+        if (cod) seenCodigos.add(cod);
+        if (nom) seenNombres.add(nom);
+        merged.push({ id:"d-"+(d.id||d.codigo||nom), codigo:d.codigo, nombre:d.nombre, localidad:d.localidad });
+      });
+      setClientes(merged);
     } catch(e) { console.error(e); }
     finally { setLoading(false); }
   }, []);
