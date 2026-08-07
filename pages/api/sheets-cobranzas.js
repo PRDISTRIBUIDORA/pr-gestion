@@ -6,6 +6,7 @@
 //  diasDeuda) y los de Supabase (forma_pago, dias_deuda).
 // ============================================================
 import { createClient } from "@supabase/supabase-js";
+import { randomUUID } from "crypto";
 
 export const config = { maxDuration: 60 };
 
@@ -132,6 +133,7 @@ export default async function handler(req, res) {
             seenIds.add(db.id);
             updated++;
           } else {
+            db.id = randomUUID(); // fila nueva: le generamos un id para no mandar null
             added++;
           }
           payload.push(db);
