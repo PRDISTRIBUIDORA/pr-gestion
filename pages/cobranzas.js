@@ -22,6 +22,15 @@ const FORMAS_PAGO = ["Efectivo", "Transferencia", "Cheque"];
 const ESTADOS_VISITA = ["Visitado", "Telefónico", "Ocupado", "Cerrado"];
 const fmt = (n) => Number(n||0).toLocaleString("es-AR",{style:"currency",currency:"ARS",maximumFractionDigits:0});
 const today = () => new Date().toISOString().split("T")[0];
+// Normaliza nombres para comparar: saca mayúsculas, acentos, puntuación y espacios de más.
+// Así "Mi Amigo Fiel", "MI AMIGO FIEL" y "mi  amigo fiel" se consideran iguales.
+const normName = (n) => String(n||"")
+  .toLowerCase()
+  .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+  .replace(/['"\u00b4\u0060\u2018\u2019]/g, "")
+  .replace(/[^a-z0-9 ]/g, " ")
+  .replace(/\s+/g, " ")
+  .trim();
 
 const S = {
   page:     {minHeight:"100vh",background:"#080b10",color:"#e2e8f0",fontFamily:"'DM Sans',system-ui,sans-serif"},
@@ -246,7 +255,7 @@ function exportResumen(cobros, visitas, clientes) {
   });
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(porVendedor), "Por Vendedor");
   const codigosAcc = new Set(), nombresAcc = new Set();
-  const normN = (n) => String(n||"").toLowerCase().trim();
+  const normN = (n) => normName(n);
   cobros.forEach(c => { if (c.codigo) codigosAcc.add(String(c.codigo)); if (c.cliente) nombresAcc.add(normN(c.cliente)); });
   visitas.forEach(v => { if (v.codigo) codigosAcc.add(String(v.codigo)); if (v.cliente) nombresAcc.add(normN(v.cliente)); });
   const sinAccion = clientes.filter(c => {
@@ -397,7 +406,7 @@ function DeudoresTab({ isAdmin }) {
 
   const codigosConAccion = new Set();
   const nombresConAccion = new Set();
-  const normNombre = (n) => String(n||"").toLowerCase().trim();
+  const normNombre = (n) => normName(n);
   cobros.forEach(c => { if (c.codigo) codigosConAccion.add(String(c.codigo)); if (c.cliente) nombresConAccion.add(normNombre(c.cliente)); });
   visitas.forEach(v => { if (v.codigo) codigosConAccion.add(String(v.codigo)); if (v.cliente) nombresConAccion.add(normNombre(v.cliente)); });
   const tieneAccion = (cli) => {
@@ -691,7 +700,7 @@ function VisitasTab({ isAdmin }) {
       const deu = Array.isArray(rd.data)?rd.data:[];
       const seenCodigos = new Set();
       const seenNombres = new Set();
-      const normN = (n) => String(n||"").toLowerCase().trim();
+      const normN = (n) => normName(n);
       const merged = [];
       cli.forEach(c => {
         const cod = c.codigo ? String(c.codigo) : "";
@@ -723,9 +732,19 @@ function VisitasTab({ isAdmin }) {
   const save = async () => {
     if (!form.cliente) return;
     setSaving(true);
+    // Si la visita no tiene código (se tipeó el nombre o se cargó como "nuevo cliente"),
+    // buscamos el cliente por nombre para completarle el código y que el resumen lo reconozca.
+    let f = { ...form };
+    if (!f.codigo) {
+      const match = clientes.find(c => normName(c.nombre) === normName(f.cliente));
+      if (match && match.codigo) {
+        f.codigo = match.codigo;
+        if (!f.localidad) f.localidad = match.localidad || "";
+      }
+    }
     try {
-      if (modal === "add") await apiPost({action:"addRow",sheet:"Visitas",data:{...form,fecha:today()}});
-      else await apiPost({action:"updateRow",sheet:"Visitas",id:modal.id,data:form});
+      if (modal === "add") await apiPost({action:"addRow",sheet:"Visitas",data:{...f,fecha:today()}});
+      else await apiPost({action:"updateRow",sheet:"Visitas",id:modal.id,data:f});
       setModal(null); await load();
     } catch(e) { alert("Error: "+e.message); }
     finally { setSaving(false); }
@@ -959,7 +978,7 @@ function ResumenTab() {
 
   const codigosAcc = new Set();
   const nombresAcc = new Set();
-  const normN = (n) => String(n||"").toLowerCase().trim();
+  const normN = (n) => normName(n);
   cobros.forEach(c => { if (c.codigo) codigosAcc.add(String(c.codigo)); if (c.cliente) nombresAcc.add(normN(c.cliente)); });
   visitas.forEach(v => { if (v.codigo) codigosAcc.add(String(v.codigo)); if (v.cliente) nombresAcc.add(normN(v.cliente)); });
   const sinAccion = clientes.filter(c => {
