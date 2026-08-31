@@ -40,6 +40,61 @@ const groupByDate = (orders) => {
   });
 };
 
+// ==== Deuda de Cobranzas (aviso informativo al armar el pedido) ====
+const normName = (n) => String(n||"")
+  .toLowerCase()
+  .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+  .replace(/['"\u00b4\u0060\u2018\u2019]/g, "")
+  .replace(/[^a-z0-9 ]/g, " ")
+  .replace(/\s+/g, " ")
+  .trim();
+
+function calcDias(fechaStr) {
+  if (!fechaStr) return 0;
+  let s = String(fechaStr).trim();
+  const m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+  if (m) s = `${m[3]}-${m[2].padStart(2,"0")}-${m[1].padStart(2,"0")}`;
+  const f = new Date(s);
+  if (isNaN(f)) return 0;
+  return Math.floor((Date.now() - f) / 86400000);
+}
+
+// Buscador de cliente que usa la lista compartida de Cobranzas.
+function ClienteBuscador({ clientes, value, onPick }) {
+  const [q, setQ] = useState("");
+  const [open, setOpen] = useState(false);
+  const ql = normName(q);
+  const filtered = q.trim().length > 0 ? clientes.filter(c =>
+    normName(c.nombre).includes(ql) || String(c.codigo||"").includes(q.trim())
+  ).slice(0, 25) : [];
+  return (
+    <div style={{position:"relative"}}>
+      <input
+        style={iS}
+        value={open ? q : (value||"")}
+        placeholder="Escribí para buscar cliente..."
+        onFocus={()=>{ setOpen(true); setQ(value||""); }}
+        onBlur={()=>setTimeout(()=>setOpen(false), 200)}
+        onChange={e=>{ setQ(e.target.value); setOpen(true); onPick(e.target.value, ""); }}
+      />
+      {open && q.trim().length > 0 && (
+        <div style={{position:"absolute",top:"100%",left:0,right:0,zIndex:60,background:"#fff",border:"1px solid #ddd",borderRadius:8,maxHeight:260,overflowY:"auto",boxShadow:"0 6px 16px rgba(0,0,0,.15)"}}>
+          {filtered.map(c=>(
+            <div key={(c.codigo||"")+"-"+c.nombre}
+              onMouseDown={()=>{ onPick(c.nombre, c.codigo||""); setQ(c.nombre); setOpen(false); }}
+              style={{padding:"9px 12px",cursor:"pointer",borderBottom:"1px solid #f0f0f0",fontSize:13}}>
+              <b>{c.nombre}</b>
+              {c.saldo>0 && c.dias>=30 && <span style={{marginLeft:8,fontSize:11,fontWeight:700,color:c.dias>=60?"#c62828":"#f57f17"}}>⚠️ ${Number(c.saldo).toLocaleString("es-AR")} ({c.dias}d)</span>}
+              {c.codigo && <span style={{color:"#aaa",fontSize:11,marginLeft:6}}>#{c.codigo}</span>}
+            </div>
+          ))}
+          {filtered.length===0 && <div style={{padding:"10px 12px",fontSize:12,color:"#888"}}>Sin coincidencias - se usa el nombre tal cual (cliente nuevo).</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function QtyBadge({ qty, color = "#1e3a5f" }) {
   return (
     <span style={{
@@ -179,6 +234,38 @@ function FormPedido({ vendedorName, products, stock, color, onSaved }) {
   const [search, setSearch] = useState("");
   const [prov, setProv] = useState("TODOS");
   const [showRes, setShowRes] = useState(null);
+  const [clienteCodigo, setClienteCodigo] = useState("");
+  const [clientesCob, setClientesCob] = useState([]);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const base = "/api/sheets-cobranzas?action=getData&sheet=";
+        const [rc, rd, rcomp] = await Promise.all([
+          fetch(base+"Clientes").then(r=>r.json()),
+          fetch(base+"Deudores").then(r=>r.json()),
+          fetch(base+"Comprobantes").then(r=>r.json()),
+        ]);
+        const cli = Array.isArray(rc.data)?rc.data:[];
+        const deu = Array.isArray(rd.data)?rd.data:[];
+        const comp = Array.isArray(rcomp.data)?rcomp.data:[];
+        const diasPorCod = {};
+        comp.forEach(c => { const d=calcDias(c.fecha); const k=String(c.codigo); if(diasPorCod[k]===undefined||d>diasPorCod[k]) diasPorCod[k]=d; });
+        const seenCod=new Set(), seenNom=new Set(), merged=[];
+        const add=(codigo,nombre,saldo)=>{ const cod=codigo?String(codigo):""; const nom=normName(nombre); if(cod&&seenCod.has(cod))return; if(!cod&&nom&&seenNom.has(nom))return; if(cod)seenCod.add(cod); if(nom)seenNom.add(nom); merged.push({codigo:cod,nombre:String(nombre||""),saldo:Number(saldo)||0,dias:cod?(diasPorCod[cod]||0):0}); };
+        deu.forEach(d=>add(d.codigo,d.nombre,d.saldo));
+        cli.forEach(c=>add(c.codigo,c.nombre,0));
+        setClientesCob(merged);
+      } catch(e){ console.error("deuda cobranzas", e); }
+    })();
+  }, []);
+
+  const deudaCli = (() => {
+    if (!cliente) return null;
+    const c = (clienteCodigo && clientesCob.find(x=>x.codigo===clienteCodigo)) || clientesCob.find(x=>normName(x.nombre)===normName(cliente));
+    if (c && c.saldo>0 && c.dias>=30) return { saldo:c.saldo, dias:c.dias };
+    return null;
+  })();
 
   const allP = products.length > 0 ? products : INIT_PRODUCTS;
   const filtered = allP.filter(p => {
@@ -194,22 +281,29 @@ function FormPedido({ vendedorName, products, stock, color, onSaved }) {
   const enviar = async () => {
     if (!cliente.trim()||items.length===0) return alert("Completá cliente y al menos un artículo");
     setSyncing(true);
-    const o = { id:Date.now(), vendedor:vendedorName, cliente:cliente.trim(), tipo, promo, urgente, items, total, fecha:new Date().toLocaleString("es-AR"), estado:"pendiente", estadoReparto:"", fechaReparto:"", transporte:"" };
+    const o = { id:Date.now(), vendedor:vendedorName, cliente:cliente.trim(), tipo, promo, urgente, items, total, fecha:new Date().toLocaleString("es-AR"), estado:"pendiente", estadoReparto:"", fechaReparto:"", transporte:"", deudaInfo: deudaCli };
     await apiPost("addPedido", o);
-    setShowRes(o); setCliente(""); setPromo(""); setItems([]); setUrgente(false); setTipo("pedido"); setSearch(""); setProv("TODOS");
+    setShowRes(o); setCliente(""); setClienteCodigo(""); setPromo(""); setItems([]); setUrgente(false); setTipo("pedido"); setSearch(""); setProv("TODOS");
     setSyncing(false);
   };
 
   const txtWA = o => {
 const lines = o.items.map(i=>`• *${i.qty}* - ${i.nombre} — $${(i.precio*i.qty).toLocaleString("es-AR")}`).join("\n");
-    return `*${o.tipo.toUpperCase()} — ${o.cliente}*\n${o.urgente?"🔴 URGENTE":"🟢 Puede esperar"}\nVendedor: ${o.vendedor}\nFecha: ${o.fecha}\n${o.promo?`Promo: ${o.promo}\n`:""}\n${lines}\n\n*TOTAL: $${o.total.toLocaleString("es-AR")}*`;
+    const deudaWA = o.deudaInfo ? `\n\n⚠️ *DEUDA VENCIDA: $${Number(o.deudaInfo.saldo).toLocaleString("es-AR")} (${o.deudaInfo.dias} días)*\nCotejar el saldo con el cliente por si hay un error, o saldar para poder enviar el pedido.` : "";
+    return `*${o.tipo.toUpperCase()} — ${o.cliente}*\n${o.urgente?"🔴 URGENTE":"🟢 Puede esperar"}\nVendedor: ${o.vendedor}\nFecha: ${o.fecha}\n${o.promo?`Promo: ${o.promo}\n`:""}\n${lines}\n\n*TOTAL: $${o.total.toLocaleString("es-AR")}*${deudaWA}`;
   };
 
   return (
     <div>
       <div style={cd}>
         <label style={lb}>Cliente</label>
-        <input value={cliente} onChange={e=>setCliente(e.target.value)} placeholder="Nombre del cliente" style={iS} />
+        <ClienteBuscador clientes={clientesCob} value={cliente} onPick={(nom,cod)=>{ setCliente(nom); setClienteCodigo(cod); }} />
+        {deudaCli && (
+          <div style={{background:deudaCli.dias>=60?"#ffebee":"#fff8e1",border:`2px solid ${deudaCli.dias>=60?"#e53935":"#f9a825"}`,borderRadius:10,padding:"10px 12px",marginBottom:10}}>
+            <div style={{fontWeight:800,fontSize:13,color:deudaCli.dias>=60?"#c62828":"#f57f17"}}>⚠️ DEUDA VENCIDA — ${deudaCli.saldo.toLocaleString("es-AR")} ({deudaCli.dias} días)</div>
+            <div style={{fontSize:12,color:"#555",marginTop:4,lineHeight:1.4}}>El cliente tiene deuda pendiente para preparar el pedido. Se solicita cotejar el saldo con el cliente por si hay un error, o saldar para poder enviar el pedido.</div>
+          </div>
+        )}
         <div style={{display:"flex",gap:8,marginBottom:10}}>
           <div style={{flex:1}}><label style={lb}>Tipo</label>
             <select value={tipo} onChange={e=>setTipo(e.target.value)} style={iS}>
@@ -280,6 +374,7 @@ const lines = o.items.map(i=>`• *${i.qty}* - ${i.nombre} — $${(i.precio*i.qt
         <Modal onClose={()=>{setShowRes(null);onSaved&&onSaved();}}>
           <h3 style={{marginTop:0,color}}>✅ {showRes.tipo.charAt(0).toUpperCase()+showRes.tipo.slice(1)} guardado</h3>
           <p style={{fontSize:13,color:"#555"}}>Cliente: <b>{showRes.cliente}</b> · Total: <b>${showRes.total.toLocaleString("es-AR")}</b></p>
+          {showRes.deudaInfo && <div style={{background:showRes.deudaInfo.dias>=60?"#ffebee":"#fff8e1",border:`1px solid ${showRes.deudaInfo.dias>=60?"#e53935":"#f9a825"}`,borderRadius:8,padding:"8px 10px",marginBottom:10,fontSize:12,fontWeight:700,color:showRes.deudaInfo.dias>=60?"#c62828":"#f57f17"}}>⚠️ Deuda vencida: ${Number(showRes.deudaInfo.saldo).toLocaleString("es-AR")} ({showRes.deudaInfo.dias} días) — queda avisado en el mensaje.</div>}
           <a href={`https://wa.me/?text=${encodeURIComponent(txtWA(showRes))}`} target="_blank" rel="noreferrer"
             style={{display:"block",textAlign:"center",background:"#25D366",color:"#fff",borderRadius:10,padding:"14px 0",textDecoration:"none",fontWeight:700,marginBottom:8}}>
             📱 Mandar por WhatsApp
