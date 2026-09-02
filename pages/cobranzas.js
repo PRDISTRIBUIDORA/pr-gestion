@@ -363,6 +363,14 @@ function VisitasLista({ rows, isAdmin, onEdit, onDelete }) {
   </div>;
 }
 
+function CargadoBadge({ cobro, visita }) {
+  const base = { marginLeft:8, fontSize:10, padding:"2px 6px", borderRadius:99, fontWeight:700, whiteSpace:"nowrap" };
+  if (cobro && visita) return <span style={{...base, color:"#34d399", background:"#06522233", border:"1px solid #10b98155"}}>✓ COBRO + VISITA</span>;
+  if (cobro) return <span style={{...base, color:"#fbbf24", background:"#eab30822", border:"1px solid #eab30855"}}>💰 COBRO</span>;
+  if (visita) return <span style={{...base, color:"#38bdf8", background:"#38bdf822", border:"1px solid #38bdf855"}}>📍 VISITA</span>;
+  return null;
+}
+
 function DeudoresTab({ isAdmin }) {
   const [clientes, setClientes] = useState([]);
   const [cobros, setCobros] = useState([]);
@@ -413,6 +421,19 @@ function DeudoresTab({ isAdmin }) {
     if (cli.codigo && codigosConAccion.has(String(cli.codigo))) return true;
     if (cli.nombre && nombresConAccion.has(normNombre(cli.nombre))) return true;
     return false;
+  };
+
+  // Detalle: qué se cargó por cliente (cobro, visita, o ambos)
+  const cobrosCod = new Set(), cobrosNom = new Set(), visitasCod = new Set(), visitasNom = new Set();
+  cobros.forEach(c => { if (c.codigo) cobrosCod.add(String(c.codigo)); if (c.cliente) cobrosNom.add(normNombre(c.cliente)); });
+  visitas.forEach(v => { if (v.codigo) visitasCod.add(String(v.codigo)); if (v.cliente) visitasNom.add(normNombre(v.cliente)); });
+  const accionDe = (cli) => {
+    const cod = cli.codigo ? String(cli.codigo) : "";
+    const nom = normNombre(cli.nombre);
+    return {
+      cobro:  (cod && cobrosCod.has(cod))  || (!!nom && cobrosNom.has(nom)),
+      visita: (cod && visitasCod.has(cod)) || (!!nom && visitasNom.has(nom)),
+    };
   };
 
   const clientesVisibles = verConAccion ? clientes : clientes.filter(c => !tieneAccion(c));
@@ -497,7 +518,7 @@ function DeudoresTab({ isAdmin }) {
               <td style={{...S.td,color:"#fbbf24",fontFamily:"monospace",fontSize:11}}>{c.codigo}</td>
               <td style={{...S.td,color:"#fff",fontWeight:600}}>
                 {c.nombre}
-                {tieneAccion(c) && <span style={{marginLeft:8,fontSize:10,color:"#34d399",background:"#06522233",border:"1px solid #10b98155",padding:"2px 6px",borderRadius:99,fontWeight:700}}>✓ CARGADO</span>}
+                {(() => { const a = accionDe(c); return <CargadoBadge cobro={a.cobro} visita={a.visita} />; })()}
               </td>
               <td style={{...S.td,color:"#64748b",fontSize:12}}>{c.localidad||"—"}</td>
               <td style={S.td}><DiaBadge dias={c.dias} /></td>
@@ -572,7 +593,7 @@ function DeudoresTab({ isAdmin }) {
                 <td style={{...S.td,color:"#fbbf24",fontFamily:"monospace",fontSize:11}}>{c.codigo}</td>
                 <td style={{...S.td,color:"#fff",fontWeight:600}}>
                   {c.nombre}
-                  {tieneAccion(c) && <span style={{marginLeft:8,fontSize:10,color:"#34d399",background:"#06522233",border:"1px solid #10b98155",padding:"2px 6px",borderRadius:99,fontWeight:700}}>✓ CARGADO</span>}
+                  {(() => { const a = accionDe(c); return <CargadoBadge cobro={a.cobro} visita={a.visita} />; })()}
                 </td>
                 <td style={{...S.td,color:"#64748b",fontSize:12}}>{c.localidad||"—"}</td>
                 <td style={S.td}><DiaBadge dias={c.dias} /></td>
