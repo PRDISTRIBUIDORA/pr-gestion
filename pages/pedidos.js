@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 
 const PROVEEDORES = ["TODOS","BECHLAB","ESPERANZA","SEDAPIC","ELMER","EVOLUTION PETS","OZI","OZICOS"];
 const DIAS = ["Lunes","Martes","Miércoles","Jueves","Viernes"];
@@ -224,6 +224,126 @@ function RepartoView({ soloLectura = false }) {
   );
 }
 
+// ==== Dictado de pedido por voz (Nivel 2: detecta artículos y se revisan) ====
+const NUM = { un:1, una:1, uno:1, dos:2, tres:3, cuatro:4, cinco:5, seis:6, siete:7, ocho:8, nueve:9, diez:10, once:11, doce:12, trece:13, catorce:14, quince:15, dieciseis:16, diecisiete:17, dieciocho:18, diecinueve:19, veinte:20, veinticinco:25, treinta:30, cuarenta:40, cincuenta:50 };
+
+function matchProducto(query, products) {
+  const qtok = normName(query).split(" ").filter(t => t.length >= 3 || /^\d+$/.test(t));
+  if (!qtok.length) return { best: null, alt: [] };
+  const scored = products.map(p => {
+    const pn = normName(p.nombre);
+    let score = 0; for (const t of qtok) if (pn.includes(t)) score++;
+    return { p, score };
+  }).filter(x => x.score > 0).sort((a,b) => b.score - a.score || a.p.nombre.length - b.p.nombre.length);
+  return { best: scored[0] ? scored[0].p : null, alt: scored.slice(0,6).map(x=>x.p) };
+}
+
+function parseDictado(text, products) {
+  const raw = String(text||"").replace(/[,\n]|\+/g, " , ").replace(/\s+y\s+/gi, " , ");
+  const tokens = raw.split(/\s+/).filter(Boolean);
+  const isQty = (w) => { const c = w.replace(/[^0-9A-Za-zÁÉÍÓÚáéíóúÑñ]/g,""); return /^\d+$/.test(c) || NUM[normName(c)] != null; };
+  const segs = []; let cur = [];
+  for (const w of tokens) {
+    if (w === ",") { if (cur.length) { segs.push(cur); cur = []; } continue; }
+    if (isQty(w) && cur.length) { segs.push(cur); cur = [w]; }
+    else cur.push(w);
+  }
+  if (cur.length) segs.push(cur);
+  const rows = [];
+  for (const seg of segs) {
+    let words = [...seg]; let qty = 1;
+    const c0 = (words[0]||"").replace(/[^0-9A-Za-zÁÉÍÓÚáéíóúÑñ]/g,"");
+    if (/^\d+$/.test(c0)) { qty = parseInt(c0,10); words = words.slice(1); }
+    else if (NUM[normName(c0)] != null) { qty = NUM[normName(c0)]; words = words.slice(1); }
+    const query = words.join(" ").trim();
+    if (!query) continue;
+    const m = matchProducto(query, products);
+    rows.push({ key: Math.random().toString(36).slice(2), qty: qty>0?qty:1, prod: m.best, query, alt: m.alt });
+  }
+  return rows;
+}
+
+function ProductoPicker({ products, value, onPick }) {
+  const [q, setQ] = useState("");
+  const [open, setOpen] = useState(false);
+  const ql = normName(q);
+  const filt = q.trim().length > 0 ? products.filter(p => normName(p.nombre).includes(ql) || String(p.codigo||"").includes(q.trim())).slice(0,25) : [];
+  return (
+    <div style={{position:"relative",flex:1,minWidth:0}}>
+      <input style={{...iS,marginBottom:0,borderColor:value?"#43a047":undefined}} value={open?q:(value?value.nombre:"")} placeholder="Buscar producto..."
+        onFocus={()=>{setOpen(true);setQ("");}} onBlur={()=>setTimeout(()=>setOpen(false),200)}
+        onChange={e=>{setQ(e.target.value);setOpen(true);}} />
+      {open && q.trim().length>0 && (
+        <div style={{position:"absolute",top:"100%",left:0,right:0,zIndex:70,background:"#fff",border:"1px solid #ddd",borderRadius:8,maxHeight:220,overflowY:"auto",boxShadow:"0 6px 16px rgba(0,0,0,.15)"}}>
+          {filt.map(p=>(
+            <div key={p.id} onMouseDown={()=>{onPick(p);setQ("");setOpen(false);}} style={{padding:"8px 10px",cursor:"pointer",borderBottom:"1px solid #f0f0f0",fontSize:12}}>
+              <b>{p.nombre}</b> <span style={{color:"#aaa"}}>${Number(p.precio).toLocaleString("es-AR")}</span>
+            </div>
+          ))}
+          {filt.length===0 && <div style={{padding:"8px 10px",fontSize:12,color:"#888"}}>Sin resultados</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DictarPedidoModal({ products, onAceptar, onCancelar }) {
+  const [transcript, setTranscript] = useState("");
+  const [grabando, setGrabando] = useState(false);
+  const [soportado, setSoportado] = useState(true);
+  const [items, setItems] = useState(null);
+  const recRef = useRef(null); const baseRef = useRef("");
+  const iniciar = () => {
+    const SR = typeof window!=="undefined" && (window.SpeechRecognition || window.webkitSpeechRecognition);
+    if (!SR) { setSoportado(false); return; }
+    const rec = new SR(); rec.lang="es-AR"; rec.continuous=true; rec.interimResults=true;
+    baseRef.current = transcript ? transcript.trim()+" " : "";
+    rec.onresult = (e)=>{ let fin="",inte=""; for(let i=0;i<e.results.length;i++){const t=e.results[i][0].transcript; if(e.results[i].isFinal) fin+=t+" "; else inte+=t;} setTranscript((baseRef.current+fin+inte).replace(/\s+/g," ").trimStart()); };
+    rec.onend=()=>setGrabando(false); rec.onerror=()=>setGrabando(false);
+    recRef.current=rec; setGrabando(true); try{rec.start();}catch(e){setGrabando(false);}
+  };
+  const detener = ()=>{ try{recRef.current&&recRef.current.stop();}catch(e){} setGrabando(false); };
+  const detectar = ()=>{ detener(); setItems(parseDictado(transcript, products)); };
+  const setRow = (key,patch)=>setItems(prev=>prev.map(r=>r.key===key?{...r,...patch}:r));
+  const delRow = (key)=>setItems(prev=>prev.filter(r=>r.key!==key));
+  const addRow = ()=>setItems(prev=>[...(prev||[]),{key:Math.random().toString(36).slice(2),qty:1,prod:null,query:""}]);
+  const aceptar = ()=>{ const finales=(items||[]).filter(r=>r.prod).map(r=>({...r.prod, qty: Math.max(1, parseInt(r.qty)||1)})); onAceptar(finales); };
+  const hayValidos = items && items.some(r=>r.prod);
+  return (
+    <Modal onClose={()=>{detener();onCancelar();}}>
+      <h3 style={{marginTop:0,color:"#e65100"}}>🎤 Dictar pedido</h3>
+      {!soportado && <p style={{color:"#c62828",fontSize:12}}>Este navegador no permite dictado por voz. Usá Chrome (Android) o Safari (iPhone). Igual podés escribir el pedido abajo.</p>}
+      <label style={lb}>1) Dictá o escribí el pedido</label>
+      <textarea value={transcript} onChange={e=>setTranscript(e.target.value)} placeholder="Ej: 10 estampa plus perro, 5 vagoneta gato, 3 power comprimidos..." style={{width:"100%",height:90,borderRadius:8,border:"1px solid #ddd",padding:10,fontSize:13,boxSizing:"border-box"}} />
+      <div style={{display:"flex",gap:8,margin:"8px 0"}}>
+        {!grabando
+          ? <button onClick={iniciar} style={{...bP("#43a047"),flex:1,marginTop:0}}>🎤 {transcript?"Seguir":"Dictar"}</button>
+          : <button onClick={detener} style={{...bP("#e53935"),flex:1,marginTop:0}}>⏹ Detener</button>}
+        <button onClick={detectar} disabled={!transcript.trim()} style={{...bP("#1565c0"),flex:1,marginTop:0,opacity:transcript.trim()?1:.5}}>🔎 Detectar</button>
+      </div>
+      {items && (
+        <div style={{marginTop:4}}>
+          <label style={lb}>2) Revisá y corregí antes de cargar</label>
+          {items.length===0 && <p style={{fontSize:12,color:"#888"}}>No se detectaron artículos. Agregalos manualmente abajo.</p>}
+          {items.map(r=>(
+            <div key={r.key} style={{display:"flex",gap:6,alignItems:"center",marginBottom:6}}>
+              <input type="number" min="1" value={r.qty} onChange={e=>setRow(r.key,{qty:e.target.value})} style={{width:52,padding:"7px 4px",borderRadius:8,border:"1px solid #ddd",textAlign:"center",fontSize:14,fontWeight:700}} />
+              <ProductoPicker products={products} value={r.prod} onPick={p=>setRow(r.key,{prod:p})} />
+              <button onClick={()=>delRow(r.key)} style={{background:"#fdecea",color:"#e53935",border:"none",borderRadius:8,padding:"7px 10px",cursor:"pointer",fontSize:14}}>✕</button>
+            </div>
+          ))}
+          {items.some(r=>!r.prod) && <p style={{fontSize:11,color:"#e65100",margin:"2px 0"}}>⚠️ Las líneas sin producto elegido NO se cargan. Elegí el producto o quitá la línea.</p>}
+          <button onClick={addRow} style={{...bP("#607d8b"),marginTop:2}}>➕ Agregar artículo</button>
+        </div>
+      )}
+      <div style={{display:"flex",gap:8,marginTop:12}}>
+        <button onClick={()=>{detener();onCancelar();}} style={{...bP("#888"),flex:1,marginTop:0}}>Cancelar</button>
+        <button onClick={aceptar} disabled={!hayValidos} style={{...bP("#43a047"),flex:1,marginTop:0,opacity:hayValidos?1:.5}}>✓ Aceptar y cargar</button>
+      </div>
+    </Modal>
+  );
+}
+
 function FormPedido({ vendedorName, products, stock, color, onSaved }) {
   const [syncing, setSyncing] = useState(false);
   const [cliente, setCliente] = useState("");
@@ -236,6 +356,8 @@ function FormPedido({ vendedorName, products, stock, color, onSaved }) {
   const [showRes, setShowRes] = useState(null);
   const [clienteCodigo, setClienteCodigo] = useState("");
   const [clientesCob, setClientesCob] = useState([]);
+  const [dictarPedido, setDictarPedido] = useState(false);
+  const [copiado, setCopiado] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -276,6 +398,27 @@ function FormPedido({ vendedorName, products, stock, color, onSaved }) {
 
   const addItem = p => setItems(prev => { const ex=prev.find(i=>i.id===p.id); if(ex) return prev.map(i=>i.id===p.id?{...i,qty:i.qty+1}:i); return [...prev,{...p,qty:1}]; });
   const updQty = (id,val) => { const qty=parseInt(val)||0; if(qty<=0) setItems(prev=>prev.filter(i=>i.id!==id)); else setItems(prev=>prev.map(i=>i.id===id?{...i,qty}:i)); };
+  const cargarDictado = (nuevos) => {
+    setItems(prev => {
+      const map = new Map(prev.map(i=>[i.id, {...i}]));
+      for (const n of nuevos) {
+        if (map.has(n.id)) map.get(n.id).qty += (parseInt(n.qty)||1);
+        else map.set(n.id, {...n, qty: parseInt(n.qty)||1});
+      }
+      return Array.from(map.values());
+    });
+    setDictarPedido(false);
+  };
+  const copiarMensaje = async (o) => {
+    const txt = txtWA(o);
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) await navigator.clipboard.writeText(txt);
+      else { const ta=document.createElement("textarea"); ta.value=txt; ta.style.position="fixed"; ta.style.left="-9999px"; document.body.appendChild(ta); ta.focus(); ta.select(); document.execCommand("copy"); document.body.removeChild(ta); }
+      setCopiado(true);
+      setTimeout(()=>{ setCopiado(false); setShowRes(null); onSaved&&onSaved(); }, 1200);
+    } catch(e) { alert("No se pudo copiar automaticamente. Copialo a mano."); }
+  };
+  const esAnto = /anto/i.test(vendedorName || "");
   const total = items.reduce((s,i)=>s+i.precio*i.qty,0);
 
   const enviar = async () => {
@@ -326,6 +469,8 @@ const lines = o.items.map(i=>`• *${i.qty}* - ${i.nombre} — $${(i.precio*i.qt
         <div style={{display:"flex",gap:4,flexWrap:"wrap",marginBottom:10}}>
           {PROVEEDORES.map(p=><button key={p} onClick={()=>setProv(p)} style={chip(prov===p,color)}>{p}</button>)}
         </div>
+        <button type="button" onClick={()=>setDictarPedido(true)} style={{...bP("#e65100"),marginTop:0,marginBottom:12}}>🎤 Dictar pedido (voz)</button>
+        {dictarPedido && <DictarPedidoModal products={allP} onAceptar={cargarDictado} onCancelar={()=>setDictarPedido(false)} />}
         <label style={lb}>Buscar artículo</label>
         <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Nombre o código..." style={iS} />
         <div style={{maxHeight:220,overflowY:"auto"}}>
@@ -375,10 +520,9 @@ const lines = o.items.map(i=>`• *${i.qty}* - ${i.nombre} — $${(i.precio*i.qt
           <h3 style={{marginTop:0,color}}>✅ {showRes.tipo.charAt(0).toUpperCase()+showRes.tipo.slice(1)} guardado</h3>
           <p style={{fontSize:13,color:"#555"}}>Cliente: <b>{showRes.cliente}</b> · Total: <b>${showRes.total.toLocaleString("es-AR")}</b></p>
           {showRes.deudaInfo && <div style={{background:showRes.deudaInfo.dias>=60?"#ffebee":"#fff8e1",border:`1px solid ${showRes.deudaInfo.dias>=60?"#e53935":"#f9a825"}`,borderRadius:8,padding:"8px 10px",marginBottom:10,fontSize:12,fontWeight:700,color:showRes.deudaInfo.dias>=60?"#c62828":"#f57f17"}}>⚠️ Deuda vencida: ${Number(showRes.deudaInfo.saldo).toLocaleString("es-AR")} ({showRes.deudaInfo.dias} días) — queda avisado en el mensaje.</div>}
-          <a href={`https://wa.me/?text=${encodeURIComponent(txtWA(showRes))}`} target="_blank" rel="noreferrer"
-            style={{display:"block",textAlign:"center",background:"#25D366",color:"#fff",borderRadius:10,padding:"14px 0",textDecoration:"none",fontWeight:700,marginBottom:8}}>
-            📱 Mandar por WhatsApp
-          </a>
+          {esAnto
+            ? <button onClick={()=>copiarMensaje(showRes)} style={{display:"block",width:"100%",textAlign:"center",background:copiado?"#43a047":"#1565c0",color:"#fff",borderRadius:10,padding:"14px 0",border:"none",fontWeight:700,marginBottom:8,cursor:"pointer",fontSize:14}}>{copiado?"✓ ¡Copiado! Pegalo en el WhatsApp Web":"📋 Copiar mensaje"}</button>
+            : <a href={`https://wa.me/?text=${encodeURIComponent(txtWA(showRes))}`} target="_blank" rel="noreferrer" style={{display:"block",textAlign:"center",background:"#25D366",color:"#fff",borderRadius:10,padding:"14px 0",textDecoration:"none",fontWeight:700,marginBottom:8}}>📱 Mandar por WhatsApp</a>}
           <button onClick={()=>{setShowRes(null);onSaved&&onSaved();}} style={{...bP(color),marginBottom:8}}>➕ Cargar otro pedido</button>
         </Modal>
       )}
