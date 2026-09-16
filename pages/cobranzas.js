@@ -371,6 +371,51 @@ function CargadoBadge({ cobro, visita }) {
   return null;
 }
 
+function DictadoModal({ titulo="Dictar nota", initial="", onAceptar, onCancelar }) {
+  const [texto, setTexto] = useState(initial);
+  const [grabando, setGrabando] = useState(false);
+  const [soportado, setSoportado] = useState(true);
+  const recRef = useRef(null); const baseRef = useRef("");
+  const iniciar = () => {
+    const SR = typeof window!=="undefined" && (window.SpeechRecognition || window.webkitSpeechRecognition);
+    if (!SR) { setSoportado(false); return; }
+    const rec = new SR(); rec.lang="es-AR"; rec.continuous=true; rec.interimResults=true;
+    baseRef.current = texto ? texto.trim()+" " : "";
+    rec.onresult = (e)=>{ let fin="",inte=""; for(let i=0;i<e.results.length;i++){const t=e.results[i][0].transcript; if(e.results[i].isFinal) fin+=t+" "; else inte+=t;} setTexto((baseRef.current+fin+inte).replace(/\s+/g," ").trimStart()); };
+    rec.onend=()=>setGrabando(false); rec.onerror=()=>setGrabando(false);
+    recRef.current=rec; setGrabando(true); try{rec.start();}catch(e){setGrabando(false);}
+  };
+  const detener = ()=>{ try{recRef.current&&recRef.current.stop();}catch(e){} setGrabando(false); };
+  const bt = (bg,fg,bd)=>({flex:1,padding:"10px 0",borderRadius:8,border:bd||"none",cursor:"pointer",fontWeight:700,fontSize:13,background:bg,color:fg});
+  return (
+    <Modal title={"🎤 "+titulo} onClose={()=>{detener();onCancelar();}}>
+      {!soportado && <div style={{color:"#f87171",fontSize:12,marginBottom:8}}>Este navegador no permite dictado por voz. Usá Chrome (Android) o Safari (iPhone). Igual podés escribir a mano abajo.</div>}
+      <textarea value={texto} onChange={e=>setTexto(e.target.value)} placeholder="Acá aparece lo que dictás. Podés corregirlo a mano." style={{...S.input, height:120, resize:"none"}} />
+      <div style={{marginBottom:10}}>
+        {!grabando
+          ? <button onClick={iniciar} style={{...bt("#06522233","#34d399","1px solid #10b98155"),width:"100%"}}>🎤 {texto?"Seguir dictando":"Empezar a dictar"}</button>
+          : <button onClick={detener} style={{...bt("#7f1d1d33","#f87171","1px solid #ef444455"),width:"100%"}}>⏹ Detener</button>}
+      </div>
+      <div style={{display:"flex",gap:10}}>
+        <button onClick={()=>{detener();onCancelar();}} style={bt("#1e2530","#94a3b8")}>Cancelar</button>
+        <button onClick={()=>{detener();onAceptar(texto.trim());}} style={bt("#eab308","#000")}>✓ Aceptar</button>
+      </div>
+      <div style={{fontSize:11,color:"#64748b",marginTop:8}}>Corregí el texto arriba si hace falta, después tocá Aceptar.</div>
+    </Modal>
+  );
+}
+
+function NotaConDictado({ value, onChange, placeholder }) {
+  const [dictando, setDictando] = useState(false);
+  return (
+    <div>
+      <textarea style={{...S.input,height:60,resize:"none"}} value={value} onChange={e=>onChange(e.target.value)} placeholder={placeholder} />
+      <button type="button" onClick={()=>setDictando(true)} style={{marginTop:4,background:"#0c344922",color:"#38bdf8",border:"1px solid #38bdf855",borderRadius:8,padding:"5px 12px",fontSize:12,cursor:"pointer",fontWeight:700}}>🎤 Dictar</button>
+      {dictando && <DictadoModal titulo="Dictar nota" initial={value} onAceptar={(txt)=>{ onChange(txt); setDictando(false); }} onCancelar={()=>setDictando(false)} />}
+    </div>
+  );
+}
+
 function DeudoresTab({ isAdmin }) {
   const [clientes, setClientes] = useState([]);
   const [cobros, setCobros] = useState([]);
@@ -645,7 +690,7 @@ function DeudoresTab({ isAdmin }) {
           {COBRADORES.map(c=><option key={c}>{c}</option>)}
         </select>
       </Field>
-      <Field label="Notas"><textarea style={{...S.input,height:60,resize:"none"}} value={form.notas||""} onChange={e=>setForm(p=>({...p,notas:e.target.value}))} /></Field>
+      <Field label="Notas"><NotaConDictado value={form.notas||""} onChange={(v)=>setForm(p=>({...p,notas:v}))} /></Field>
       <div style={{display:"flex",gap:10}}>
         <button style={{...S.btnGhost,flex:1}} onClick={()=>setModalCobro(null)}>Cancelar</button>
         <button style={{...S.btnPri,flex:1}} disabled={saving||!form.monto||!form.cobrador||!form.formaPago} onClick={guardarCobro}>{saving?"Guardando…":"Guardar cobro"}</button>
@@ -669,7 +714,7 @@ function DeudoresTab({ isAdmin }) {
           {COBRADORES.map(c=><option key={c}>{c}</option>)}
         </select>
       </Field>
-      <Field label="Notas"><textarea style={{...S.input,height:60,resize:"none"}} value={form.notas||""} onChange={e=>setForm(p=>({...p,notas:e.target.value}))} placeholder="Observaciones, compromisos de pago, etc." /></Field>
+      <Field label="Notas"><NotaConDictado value={form.notas||""} onChange={(v)=>setForm(p=>({...p,notas:v}))} placeholder="Observaciones, compromisos de pago, etc." /></Field>
       <div style={{display:"flex",gap:10}}>
         <button style={{...S.btnGhost,flex:1}} onClick={()=>setModalVisita(null)}>Cancelar</button>
         <button style={{...S.btnPri,flex:1,background:"#38bdf8",color:"#000"}} disabled={saving||!form.cobrador||!form.estado} onClick={guardarVisita}>{saving?"Guardando…":"Guardar visita"}</button>
@@ -690,7 +735,7 @@ function DeudoresTab({ isAdmin }) {
           {COBRADORES.map(c=><option key={c}>{c}</option>)}
         </select>
       </Field>
-      <Field label="Notas"><textarea style={{...S.input,height:60,resize:"none"}} value={form.notas||""} onChange={e=>setForm(p=>({...p,notas:e.target.value}))} /></Field>
+      <Field label="Notas"><NotaConDictado value={form.notas||""} onChange={(v)=>setForm(p=>({...p,notas:v}))} /></Field>
       <div style={{display:"flex",gap:10}}>
         <button style={{...S.btnGhost,flex:1}} onClick={()=>setEditCobro(null)}>Cancelar</button>
         <button style={{...S.btnPri,flex:1}} disabled={saving} onClick={guardarEdicion}>{saving?"Guardando…":"Guardar cambios"}</button>
@@ -807,7 +852,7 @@ function VisitasTab({ isAdmin }) {
           {COBRADORES.map(c=><option key={c}>{c}</option>)}
         </select>
       </Field>
-      <Field label="Notas"><textarea style={{...S.input,height:60,resize:"none"}} value={form.notas||""} onChange={e=>setForm(p=>({...p,notas:e.target.value}))} /></Field>
+      <Field label="Notas"><NotaConDictado value={form.notas||""} onChange={(v)=>setForm(p=>({...p,notas:v}))} /></Field>
       <div style={{display:"flex",gap:10}}>
         <button style={{...S.btnGhost,flex:1}} onClick={()=>setModal(null)}>Cancelar</button>
         <button style={{...S.btnPri,flex:1}} disabled={saving||!form.cliente} onClick={save}>{saving?"Guardando…":"Guardar"}</button>
