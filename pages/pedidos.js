@@ -81,7 +81,7 @@ function ClienteBuscador({ clientes, value, onPick }) {
         <div style={{position:"absolute",top:"100%",left:0,right:0,zIndex:60,background:"#fff",border:"1px solid #ddd",borderRadius:8,maxHeight:260,overflowY:"auto",boxShadow:"0 6px 16px rgba(0,0,0,.15)"}}>
           {filtered.map(c=>(
             <div key={(c.codigo||"")+"-"+c.nombre}
-              onMouseDown={()=>{ onPick(c.nombre, c.codigo||""); setQ(c.nombre); setOpen(false); }}
+              onMouseDown={(e)=>{ e.preventDefault(); onPick(c.nombre, c.codigo||""); setQ(c.nombre); setOpen(false); }}
               style={{padding:"9px 12px",cursor:"pointer",borderBottom:"1px solid #f0f0f0",fontSize:13}}>
               <b>{c.nombre}</b>
               {c.saldo>0 && c.dias>=30 && <span style={{marginLeft:8,fontSize:11,fontWeight:700,color:c.dias>=60?"#c62828":"#f57f17"}}>⚠️ ${Number(c.saldo).toLocaleString("es-AR")} ({c.dias}d)</span>}
@@ -226,41 +226,77 @@ function RepartoView({ soloLectura = false }) {
 
 // ==== Dictado de pedido por voz (Nivel 2: detecta artículos y se revisan) ====
 const NUM = { un:1, una:1, uno:1, dos:2, tres:3, cuatro:4, cinco:5, seis:6, siete:7, ocho:8, nueve:9, diez:10, once:11, doce:12, trece:13, catorce:14, quince:15, dieciseis:16, diecisiete:17, dieciocho:18, diecinueve:19, veinte:20, veinticinco:25, treinta:30, cuarenta:40, cincuenta:50 };
+// Unidades de peso: el "20 kg" es parte del NOMBRE del producto, no una cantidad
+const UNIT = new Set(["kg","kgs","kilo","kilos","k","kilogramo","kilogramos","gr","grs","gramos","g"]);
+// Palabras que no ayudan a identificar el producto (incluye las unidades: todos los productos tienen kg)
+const STOP = new Set(["x","de","del","la","el","los","las","un","una","uno","por","para","con","y","mas","kg","kgs","kilo","kilos","k","g","gr","grs","gramos","al","a"]);
+
+// Separa letra/numero pegados ("x20kg" -> "x 20 kg", "x3kg" -> "x 3 kg") para que el peso quede como numero suelto
+function prep(s) {
+  return normName(s).replace(/([a-z])(\d)/g, "$1 $2").replace(/(\d)([a-z])/g, "$1 $2").replace(/\s+/g, " ").trim();
+}
+function numVal(tok) { if (/^\d+$/.test(tok)) return parseInt(tok,10); return NUM[tok] != null ? NUM[tok] : null; }
 
 function matchProducto(query, products) {
-  const qtok = normName(query).split(" ").filter(t => t.length >= 3 || /^\d+$/.test(t));
+  const qtok = prep(query).split(" ").filter(t => t && !STOP.has(t) && (t.length >= 2 || /^\d+$/.test(t)));
   if (!qtok.length) return { best: null, alt: [] };
   const scored = products.map(p => {
-    const pn = normName(p.nombre);
-    let score = 0; for (const t of qtok) if (pn.includes(t)) score++;
-    return { p, score };
-  }).filter(x => x.score > 0).sort((a,b) => b.score - a.score || a.p.nombre.length - b.p.nombre.length);
+    const ptok = prep(p.nombre).split(" ").filter(Boolean);
+    let score = 0;
+    for (const t of qtok) {
+      const isNum = /^\d+$/.test(t); let hit = false;
+      for (const pt of ptok) {
+        if (isNum) { if (pt === t) { hit = true; break; } }
+        else if (pt === t || (pt.length >= 3 && t.length >= 3 && (pt.startsWith(t) || t.startsWith(pt)))) { hit = true; break; }
+      }
+      if (hit) score += isNum ? 2 : 1; // el peso (numero) pesa doble: define la variante correcta
+    }
+    return { p, score, len: ptok.length };
+  }).filter(x => x.score > 0).sort((a,b) => b.score - a.score || a.len - b.len || a.p.nombre.length - b.p.nombre.length);
   return { best: scored[0] ? scored[0].p : null, alt: scored.slice(0,6).map(x=>x.p) };
 }
 
 function parseDictado(text, products) {
-  const raw = String(text||"").replace(/[,\n]|\+/g, " , ").replace(/\s+y\s+/gi, " , ");
-  const tokens = raw.split(/\s+/).filter(Boolean);
-  const isQty = (w) => { const c = w.replace(/[^0-9A-Za-zÁÉÍÓÚáéíóúÑñ]/g,""); return /^\d+$/.test(c) || NUM[normName(c)] != null; };
-  const segs = []; let cur = [];
-  for (const w of tokens) {
-    if (w === ",") { if (cur.length) { segs.push(cur); cur = []; } continue; }
-    if (isQty(w) && cur.length) { segs.push(cur); cur = [w]; }
-    else cur.push(w);
+  const t = prep(String(text||"").replace(/[,\n;]|\+/g, " , ").replace(/\s+y\s+/gi, " , "));
+  const toks = t.split(" ").filter(Boolean);
+  const segs = []; let cur = []; const pushCur = () => { if (cur.length) { segs.push(cur); cur = []; } };
+  for (let i = 0; i < toks.length; i++) {
+    const w = toks[i];
+    if (w === ",") { pushCur(); continue; }
+    const nv = numVal(w);
+    if (nv != null) {
+      const next = toks[i+1], prev = toks[i-1];
+      const isWeight = (next && UNIT.has(next)) || prev === "x" || prev === "por";
+      if (isWeight) { cur.push(String(nv)); }   // peso: queda con el producto (numeros en palabra -> digito)
+      else { pushCur(); cur.push(w); }          // cantidad real: arranca un producto nuevo
+      continue;
+    }
+    cur.push(w);
+    if (UNIT.has(w)) pushCur();                 // termino el peso -> se cierra el producto
   }
-  if (cur.length) segs.push(cur);
+  pushCur();
   const rows = [];
   for (const seg of segs) {
     let words = [...seg]; let qty = 1;
-    const c0 = (words[0]||"").replace(/[^0-9A-Za-zÁÉÍÓÚáéíóúÑñ]/g,"");
-    if (/^\d+$/.test(c0)) { qty = parseInt(c0,10); words = words.slice(1); }
-    else if (NUM[normName(c0)] != null) { qty = NUM[normName(c0)]; words = words.slice(1); }
+    const nv0 = numVal(words[0]);
+    if (nv0 != null && !(words[1] && UNIT.has(words[1]))) { qty = nv0; words = words.slice(1); }
     const query = words.join(" ").trim();
     if (!query) continue;
-    const m = matchProducto(query, products);
+    const qwords = words.filter(w => !STOP.has(w)).join(" ");
+    const m = matchProducto(qwords, products);
     rows.push({ key: Math.random().toString(36).slice(2), qty: qty>0?qty:1, prod: m.best, query, alt: m.alt });
   }
-  return rows;
+  // junta lineas repetidas del mismo producto (suma cantidades) para que no salgan "muchas copias"
+  const merged = []; const byId = {};
+  for (const r of rows) {
+    if (r.prod) {
+      const id = r.prod.id != null ? r.prod.id : r.prod.codigo;
+      if (byId[id] != null) { merged[byId[id]].qty += r.qty; continue; }
+      byId[id] = merged.length;
+    }
+    merged.push(r);
+  }
+  return merged;
 }
 
 function ProductoPicker({ products, value, onPick }) {
@@ -276,7 +312,7 @@ function ProductoPicker({ products, value, onPick }) {
       {open && q.trim().length>0 && (
         <div style={{position:"absolute",top:"100%",left:0,right:0,zIndex:70,background:"#fff",border:"1px solid #ddd",borderRadius:8,maxHeight:220,overflowY:"auto",boxShadow:"0 6px 16px rgba(0,0,0,.15)"}}>
           {filt.map(p=>(
-            <div key={p.id} onMouseDown={()=>{onPick(p);setQ("");setOpen(false);}} style={{padding:"8px 10px",cursor:"pointer",borderBottom:"1px solid #f0f0f0",fontSize:12}}>
+            <div key={p.id} onMouseDown={(e)=>{e.preventDefault();onPick(p);setQ("");setOpen(false);}} style={{padding:"8px 10px",cursor:"pointer",borderBottom:"1px solid #f0f0f0",fontSize:12}}>
               <b>{p.nombre}</b> <span style={{color:"#aaa"}}>${Number(p.precio).toLocaleString("es-AR")}</span>
             </div>
           ))}
