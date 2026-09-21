@@ -124,14 +124,15 @@ function RepartoView({ soloLectura = false }) {
   },[]);
   useEffect(()=>{refresh();const t=setInterval(refresh,10000);return()=>clearInterval(t);},[refresh]);
 
-  const facturados = orders.filter(o=>["facturado","en_reparto","programado","entregado"].includes(o.estado)||o.estadoReparto);
+  const facturados = orders.filter(o=>["facturado","en_reparto","programado","entregado"].includes(o.estado)||o.estadoReparto||retencionDe(o));
 
   // Si hay búsqueda, filtra por parte del nombre del cliente sobre TODAS las categorías
   const q = busca.trim().toLowerCase();
   const buscando = q.length > 0;
   const porBusqueda = facturados.filter(o=>String(o.cliente||"").toLowerCase().includes(q));
 
-  const porTab = tab==="pendiente"?facturados.filter(o=>!o.estadoReparto||o.estadoReparto==="")
+  const porTab = tab==="retenido"?facturados.filter(o=>retencionDe(o))
+    :tab==="pendiente"?facturados.filter(o=>!o.estadoReparto||o.estadoReparto==="")
     :tab==="en_reparto"?facturados.filter(o=>o.estadoReparto==="en_reparto")
     :tab==="programado"?facturados.filter(o=>o.estadoReparto==="programado")
     :facturados.filter(o=>o.estadoReparto==="entregado");
@@ -147,6 +148,7 @@ function RepartoView({ soloLectura = false }) {
   const handleEntregado = (o) => { setShowTransporte(o); setTransporteSel(""); };
 
   const counts = {
+    retenido:facturados.filter(o=>retencionDe(o)).length,
     pendiente:facturados.filter(o=>!o.estadoReparto||o.estadoReparto==="").length,
     en_reparto:facturados.filter(o=>o.estadoReparto==="en_reparto").length,
     programado:facturados.filter(o=>o.estadoReparto==="programado").length,
@@ -162,7 +164,7 @@ function RepartoView({ soloLectura = false }) {
       </div>
       {!buscando && (
         <div style={{display:"flex",background:"#fff",borderBottom:"2px solid #e8edf5",overflowX:"auto",marginBottom:12,borderRadius:8}}>
-          {[{k:"pendiente",label:`📋 Sin asignar (${counts.pendiente})`},{k:"en_reparto",label:`🚚 En reparto (${counts.en_reparto})`},{k:"programado",label:`📅 Programado (${counts.programado})`},{k:"entregado",label:`✅ Entregado (${counts.entregado})`}].map(t=>(
+          {[{k:"pendiente",label:`📋 Sin asignar (${counts.pendiente})`},{k:"en_reparto",label:`🚚 En reparto (${counts.en_reparto})`},{k:"programado",label:`📅 Programado (${counts.programado})`},{k:"entregado",label:`✅ Entregado (${counts.entregado})`},{k:"retenido",label:`🔴 Retenido (${counts.retenido})`}].map(t=>(
             <button key={t.k} onClick={()=>setTab(t.k)} style={{flex:"0 0 auto",padding:"11px 14px",border:"none",background:"transparent",borderBottom:tab===t.k?`3px solid ${color}`:"3px solid transparent",color:tab===t.k?color:"#888",fontWeight:tab===t.k?700:400,cursor:"pointer",fontSize:12,whiteSpace:"nowrap"}}>{t.label}</button>
           ))}
         </div>
@@ -170,7 +172,7 @@ function RepartoView({ soloLectura = false }) {
       {buscando && <p style={{fontSize:12,color:"#888",margin:"0 0 10px"}}>Mostrando {filtered.length} resultado(s) para "{busca}"</p>}
       {filtered.length===0&&<p style={{color:"#888",textAlign:"center",paddingTop:20}}>{buscando?"No se encontró ese cliente":"No hay pedidos en esta categoría"}</p>}
       {filtered.map(o=>(
-        <div key={o.id} style={{...cd,borderLeft:`4px solid ${o.estadoReparto==="entregado"?"#43a047":o.estadoReparto==="en_reparto"?"#e65100":o.estadoReparto==="programado"?"#1565c0":"#999"}`}}>
+        <div key={o.id} style={{...cd,borderLeft:`4px solid ${retencionDe(o)?"#c62828":o.estadoReparto==="entregado"?"#43a047":o.estadoReparto==="en_reparto"?"#e65100":o.estadoReparto==="programado"?"#1565c0":"#999"}`}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
             <div><b style={{fontSize:15}}>{o.cliente}</b>
               <div style={{fontSize:12,color:"#888"}}>{o.vendedor} · {o.fecha}</div>
@@ -186,6 +188,10 @@ function RepartoView({ soloLectura = false }) {
             ))}
             {o.items&&o.items.length>8&&<div style={{color:"#aaa"}}>y {o.items.length-8} más...</div>}
           </div>
+          {(()=>{ const r=retencionDe(o); return r?(
+            <div style={{background:"#fce4ec",border:"1px solid #c62828",borderRadius:8,padding:"7px 9px",margin:"8px 0",fontSize:12.5,color:"#c62828",fontWeight:700}}>
+              🔴 RETENIDO · {r.motivo}{r.faltantes.length?`: falta preparar ${r.faltantes.map(f=>`${Number(f.qty)-Number(f.entregado)}× ${f.nombre}`).join(", ")}`:" — Cuenta Corriente Vencida"}
+            </div>):null; })()}
           <b style={{color,display:"block",marginTop:6}}>Total: ${Number(o.total).toLocaleString("es-AR")}</b>
           {!soloLectura && (
             <div style={{display:"flex",gap:8,marginTop:10,flexWrap:"wrap"}}>
@@ -608,8 +614,12 @@ function VendedorApp({ user, onLogout }) {
                 <div style={{display:"flex",justifyContent:"space-between"}}>
                   <div><b>{o.cliente}</b> <TipoBadge tipo={o.tipo}/>
                     <div style={{fontSize:12,color:"#888",marginTop:2}}>{o.fecha}</div></div>
-                  <EstadoBadge estado={o.estado} estadoReparto={o.estadoReparto}/>
+                  <EstadoBadge estado={o.estado} estadoReparto={o.estadoReparto} motivo={(retencionDe(o)||{}).motivo}/>
                 </div>
+                {(()=>{ const r=retencionDe(o); return r?(
+                  <div style={{background:"#fce4ec",border:"1px solid #c62828",borderRadius:8,padding:"6px 9px",margin:"6px 0",fontSize:12,color:"#c62828",fontWeight:700}}>
+                    🔴 RETENIDO · {r.motivo}{r.faltantes.length?`: falta entregar ${r.faltantes.map(f=>`${Number(f.qty)-Number(f.entregado)}× ${f.nombre}`).join(", ")}`:" — Cuenta Corriente Vencida"}
+                  </div>):null; })()}
                 {o.promo&&<div style={{fontSize:12,color:"#7b1fa2",marginTop:4}}>🏷️ {o.promo}</div>}
                 {o.fechaReparto&&<div style={{fontSize:12,color:"#e65100",marginTop:2}}>📅 {o.fechaReparto}{o.transporte?` · ${o.transporte}`:""}</div>}
                 <div style={{marginTop:6}}>{o.items&&o.items.map((i,idx)=>(
@@ -694,6 +704,31 @@ function AdminApp({ user, onLogout }) {
   const updEstado = async(id,estado)=>{
     setOrders(prev=>prev.map(o=>o.id===id?{...o,estado}:o));
     await apiPost("updEstado",{id,estado});
+  };
+
+  // ==== RETENIDO por renglón (falta stock) o por CCV ====
+  // Corrige cuánto salió de un renglón. Si sale menos de lo pedido, el pedido pasa a RETENIDO.
+  const setEntregadoLinea = async(order, idx, val)=>{
+    const items = (order.items||[]).map((it,i)=> i===idx ? (val==null ? (()=>{const c={...it}; delete c.entregado; return c;})() : {...it, entregado: val}) : it);
+    const anyFalta = items.some(it=> it.entregado!=null && it.entregado!=="" && Number(it.entregado) < Number(it.qty));
+    const estado = anyFalta ? "retenido" : order.estado;
+    const upd = {...order, items, estado};
+    setOrders(prev=>prev.map(o=>o.id===order.id?upd:o));
+    await apiPost("updateOrder", upd);
+  };
+  const marcarFaltaLinea = (order, idx)=> setEntregadoLinea(order, idx, Math.max(0, (Number(order.items[idx].qty)||1)-1));
+  // Retener el pedido completo por Cuenta Corriente Vencida (sin tocar cantidades)
+  const setCCV = async(order)=>{
+    const upd = {...order, estado:"retenido"};
+    setOrders(prev=>prev.map(o=>o.id===order.id?upd:o));
+    await apiPost("updEstado",{id:order.id,estado:"retenido"});
+  };
+  // Marca el pedido como entregado completo: limpia faltantes y saca la retención
+  const quitarRetencion = async(order)=>{
+    const items = (order.items||[]).map(it=>{const c={...it}; delete c.entregado; return c;});
+    const upd = {...order, items, estado:"facturado"};
+    setOrders(prev=>prev.map(o=>o.id===order.id?upd:o));
+    await apiPost("updateOrder", upd);
   };
 
   const deleteOrderFn = async(id)=>{
@@ -812,21 +847,36 @@ function AdminApp({ user, onLogout }) {
                       <div><b style={{fontSize:15}}>{o.cliente}</b> <TipoBadge tipo={o.tipo}/>
                         <div style={{fontSize:12,color:"#888"}}>{o.vendedor} · {o.fecha}</div>
                       </div>
-                      <EstadoBadge estado={o.estado} estadoReparto={o.estadoReparto}/>
+                      <EstadoBadge estado={o.estado} estadoReparto={o.estadoReparto} motivo={(retencionDe(o)||{}).motivo}/>
                     </div>
                     {o.promo&&<div style={{fontSize:12,color:"#7b1fa2",marginTop:4}}>🏷️ {o.promo}</div>}
                     {o.fechaReparto&&<div style={{fontSize:12,color:"#e65100",marginTop:2}}>📅 {o.fechaReparto}{o.transporte?` · ${o.transporte}`:""}</div>}
-                    <div style={{marginTop:6}}>{o.items&&o.items.map((i,idx)=>(
-                      <div key={idx} style={{display:"flex",alignItems:"center",justifyContent:"space-between",fontSize:12,color:"#444",padding:"3px 0"}}>
-                        <span style={{flex:1,minWidth:0,wordBreak:"break-word"}}>{i.nombre} — ${(i.precio*i.qty).toLocaleString("es-AR")}</span>
-                        <QtyBadge qty={i.qty} color={color}/>
-                      </div>
-                    ))}</div>
+                    {(()=>{ const r=retencionDe(o); return r?(
+                      <div style={{background:"#fce4ec",border:"1px solid #c62828",borderRadius:8,padding:"6px 9px",margin:"6px 0",fontSize:12,color:"#c62828",fontWeight:700}}>
+                        🔴 RETENIDO · {r.motivo}{r.faltantes.length?`: falta entregar ${r.faltantes.map(f=>`${Number(f.qty)-Number(f.entregado)}× ${f.nombre}`).join(", ")}`:" — Cuenta Corriente Vencida"}
+                      </div>):null; })()}
+                    <div style={{marginTop:6}}>{o.items&&o.items.map((i,idx)=>{
+                      const falta = i.entregado!=null && i.entregado!=="" && Number(i.entregado)<Number(i.qty);
+                      const edit = i.entregado!=null && i.entregado!=="";
+                      return (
+                      <div key={idx} style={{display:"flex",alignItems:"center",justifyContent:"space-between",fontSize:12,color:falta?"#c62828":"#444",padding:"3px 0",gap:6}}>
+                        <span style={{flex:1,minWidth:0,wordBreak:"break-word"}}>{i.nombre} — ${(i.precio*i.qty).toLocaleString("es-AR")}{falta?<b> · salieron {i.entregado} de {i.qty} (falta {Number(i.qty)-Number(i.entregado)})</b>:null}</span>
+                        {!edit
+                          ? <><QtyBadge qty={i.qty} color={color}/><button title="Salió menos por falta de stock" onClick={()=>marcarFaltaLinea(o,idx)} style={{background:"#fce4ec",color:"#c62828",border:"none",borderRadius:6,padding:"3px 8px",cursor:"pointer",fontWeight:800}}>✖</button></>
+                          : <div style={{display:"flex",alignItems:"center",gap:4}}>
+                              <button onClick={()=>setEntregadoLinea(o,idx,Math.max(0,Number(i.entregado)-1))} style={{width:26,height:26,borderRadius:7,border:"1px solid #ddd",background:"#f4f6fb",cursor:"pointer",fontSize:15,fontWeight:700}}>−</button>
+                              <span style={{minWidth:42,textAlign:"center",fontWeight:800,color:"#c62828"}}>{i.entregado}/{i.qty}</span>
+                              <button onClick={()=>setEntregadoLinea(o,idx,Math.min(Number(i.qty),Number(i.entregado)+1))} style={{width:26,height:26,borderRadius:7,border:"1px solid #ddd",background:"#f4f6fb",cursor:"pointer",fontSize:15,fontWeight:700}}>+</button>
+                              <button title="Salió completo" onClick={()=>setEntregadoLinea(o,idx,null)} style={{background:"#e8f5e9",color:"#2e7d32",border:"none",borderRadius:6,padding:"3px 7px",cursor:"pointer",fontWeight:800}}>✓</button>
+                            </div>}
+                      </div>);
+                    })}</div>
                     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:10,flexWrap:"wrap",gap:8}}>
                       <b style={{color}}>Total: ${Number(o.total).toLocaleString("es-AR")}</b>
                       <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
                         <button onClick={()=>updEstado(o.id,"pendiente")} style={{...sB,background:o.estado==="pendiente"?color:"#e8edf5",color:o.estado==="pendiente"?"#fff":"#555"}}>⏳</button>
-                        <button onClick={()=>updEstado(o.id,"retenido")} style={{...sB,background:o.estado==="retenido"?"#c62828":"#fce4ec",color:o.estado==="retenido"?"#fff":"#c62828"}}>🔴 Retenido</button>
+                        <button onClick={()=>setCCV(o)} title="Retener por Cuenta Corriente Vencida" style={{...sB,background:(retencionDe(o)||{}).motivo==="C.C.V."?"#c62828":"#fce4ec",color:(retencionDe(o)||{}).motivo==="C.C.V."?"#fff":"#c62828"}}>💳 CCV</button>
+                        {retencionDe(o)&&<button onClick={()=>quitarRetencion(o)} title="Salió todo completo" style={{...sB,background:"#e8f5e9",color:"#2e7d32"}}>🟢 Completo</button>}
                         <button onClick={()=>updEstado(o.id,"facturado")} style={{...sB,background:o.estado==="facturado"?"#43a047":"#e8edf5",color:o.estado==="facturado"?"#fff":"#555"}}>✅ Facturado</button>
                         <button onClick={()=>setEditOrder({...o})} style={{...sB,background:"#e3f0ff",color:"#1e3a5f"}}>✏️</button>
                         <button onClick={()=>deleteOrderFn(o.id)} style={{...sB,background:"#fdecea",color:"#e53935"}}>🗑️</button>
@@ -997,12 +1047,22 @@ function TipoBadge({ tipo }) {
   return <span style={{fontSize:11,background:tipo==="pedido"?"#e3f0ff":"#fff3e0",color:tipo==="pedido"?"#1e3a5f":"#e65100",borderRadius:6,padding:"2px 6px",marginLeft:4}}>{tipo}</span>;
 }
 
-function EstadoBadge({ estado, estadoReparto }) {
+// Devuelve el motivo de retención de un pedido, o null.
+// Si algún renglón salió incompleto -> "SIN STOCK". Si está retenido sin faltantes -> "C.C.V.".
+function retencionDe(o){
+  const items = (o&&o.items)||[];
+  const faltantes = items.filter(i=> i.entregado!=null && i.entregado!=="" && Number(i.entregado) < Number(i.qty));
+  if(faltantes.length) return { motivo:"SIN STOCK", faltantes };
+  if(o&&o.estado==="retenido") return { motivo:"C.C.V.", faltantes:[] };
+  return null;
+}
+
+function EstadoBadge({ estado, estadoReparto, motivo }) {
+  if(estado==="retenido"||motivo) return <span style={{fontSize:11,fontWeight:800,color:"#fff",background:"#c62828",padding:"2px 7px",borderRadius:6}}>🔴 RETENIDO{motivo?` · ${motivo}`:""}</span>;
   if(estadoReparto==="entregado") return <span style={{fontSize:11,fontWeight:700,color:"#43a047"}}>✅ Entregado</span>;
   if(estadoReparto==="en_reparto") return <span style={{fontSize:11,fontWeight:700,color:"#e65100"}}>🚚 En reparto</span>;
   if(estadoReparto==="programado") return <span style={{fontSize:11,fontWeight:700,color:"#1565c0"}}>📅 Programado</span>;
   if(estado==="facturado") return <span style={{fontSize:11,fontWeight:700,color:"#43a047"}}>✅ Facturado</span>;
-  if(estado==="retenido") return <span style={{fontSize:11,fontWeight:700,color:"#c62828",background:"#fce4ec",padding:"2px 6px",borderRadius:6}}>🔴 Retenido</span>;
   return <span style={{fontSize:11,fontWeight:700,color:"#1e3a5f"}}>⏳ Pendiente</span>;
 }
 
