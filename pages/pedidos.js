@@ -243,6 +243,16 @@ function prep(s) {
 }
 function numVal(tok) { if (/^\d+$/.test(tok)) return parseInt(tok,10); return NUM[tok] != null ? NUM[tok] : null; }
 
+// Buscador flexible: cada palabra tipeada debe estar en el nombre (o en el código),
+// en cualquier orden y sin acentos. Ej: "estampa gato", "estampa pequenas x 15".
+function buscaProd(nombre, codigo, query) {
+  const q = String(query||"").trim();
+  if (!q) return true;
+  const pn = prep(nombre);
+  const cod = String(codigo||"").toLowerCase();
+  return prep(q).split(" ").filter(Boolean).every(t => pn.includes(t) || cod.includes(t));
+}
+
 function matchProducto(query, products) {
   const qtok = prep(query).split(" ").filter(t => t && !STOP.has(t) && (t.length >= 2 || /^\d+$/.test(t)));
   if (!qtok.length) return { best: null, alt: [] };
@@ -309,7 +319,7 @@ function ProductoPicker({ products, value, onPick }) {
   const [q, setQ] = useState("");
   const [open, setOpen] = useState(false);
   const ql = normName(q);
-  const filt = q.trim().length > 0 ? products.filter(p => normName(p.nombre).includes(ql) || String(p.codigo||"").includes(q.trim())).slice(0,25) : [];
+  const filt = q.trim().length > 0 ? products.filter(p => buscaProd(p.nombre, p.codigo, q)).slice(0,25) : [];
   return (
     <div style={{position:"relative",flex:1,minWidth:0}}>
       <input style={{...iS,marginBottom:0,borderColor:value?"#43a047":undefined}} value={open?q:(value?value.nombre:"")} placeholder="Buscar producto..."
@@ -432,11 +442,7 @@ function FormPedido({ vendedorName, products, stock, color, onSaved }) {
   })();
 
   const allP = products.length > 0 ? products : INIT_PRODUCTS;
-  const filtered = allP.filter(p => {
-    const mP = prov==="TODOS"||p.proveedor===prov;
-    const q = search.toLowerCase();
-    return mP && (!q || p.nombre.toLowerCase().includes(q) || String(p.codigo).toLowerCase().includes(q));
-  });
+  const filtered = allP.filter(p => (prov==="TODOS"||p.proveedor===prov) && buscaProd(p.nombre, p.codigo, search));
 
   const addItem = p => setItems(prev => { const ex=prev.find(i=>i.id===p.id); if(ex) return prev.map(i=>i.id===p.id?{...i,qty:i.qty+1}:i); return [...prev,{...p,qty:1}]; });
   const updQty = (id,val) => { const qty=parseInt(val)||0; if(qty<=0) setItems(prev=>prev.filter(i=>i.id!==id)); else setItems(prev=>prev.map(i=>i.id===id?{...i,qty}:i)); };
@@ -594,7 +600,7 @@ function VendedorApp({ user, onLogout }) {
   useEffect(()=>{refresh();const t=setInterval(refresh,10000);return()=>clearInterval(t);},[refresh]);
 
   const allP = products.length>0?products:INIT_PRODUCTS;
-  const filtP = allP.filter(p=>{const mP=prov==="TODOS"||p.proveedor===prov;const q=search.toLowerCase();return mP&&(!q||p.nombre.toLowerCase().includes(q)||String(p.codigo).toLowerCase().includes(q));});
+  const filtP = allP.filter(p=>(prov==="TODOS"||p.proveedor===prov)&&buscaProd(p.nombre,p.codigo,search));
   const myOrders = orders.filter(o=>o.vendedor===user.name);
 
   if(loading) return <Loader/>;
@@ -806,7 +812,7 @@ function AdminApp({ user, onLogout }) {
   };
 
   const allP = products.length>0?products:INIT_PRODUCTS;
-  const filtProd = allP.filter(p=>{const mP=prov==="TODOS"||p.proveedor===prov;const q=search.toLowerCase();return mP&&(!q||p.nombre.toLowerCase().includes(q)||String(p.codigo).toLowerCase().includes(q));});
+  const filtProd = allP.filter(p=>(prov==="TODOS"||p.proveedor===prov)&&buscaProd(p.nombre,p.codigo,search));
 
   const filtOrders = filterEstado==="todos"?orders:orders.filter(o=>o.estado===filterEstado);
   const grouped = groupByDate(filtOrders);
