@@ -132,7 +132,7 @@ function RepartoView({ soloLectura = false }) {
   const porBusqueda = facturados.filter(o=>String(o.cliente||"").toLowerCase().includes(q));
 
   const porTab = tab==="retenido"?facturados.filter(o=>retencionDe(o))
-    :tab==="pendiente"?facturados.filter(o=>!o.estadoReparto||o.estadoReparto==="")
+    :tab==="pendiente"?facturados.filter(o=>(!o.estadoReparto||o.estadoReparto==="")&&!retencionDe(o))
     :tab==="en_reparto"?facturados.filter(o=>o.estadoReparto==="en_reparto")
     :tab==="programado"?facturados.filter(o=>o.estadoReparto==="programado")
     :facturados.filter(o=>o.estadoReparto==="entregado");
@@ -149,7 +149,7 @@ function RepartoView({ soloLectura = false }) {
 
   const counts = {
     retenido:facturados.filter(o=>retencionDe(o)).length,
-    pendiente:facturados.filter(o=>!o.estadoReparto||o.estadoReparto==="").length,
+    pendiente:facturados.filter(o=>(!o.estadoReparto||o.estadoReparto==="")&&!retencionDe(o)).length,
     en_reparto:facturados.filter(o=>o.estadoReparto==="en_reparto").length,
     programado:facturados.filter(o=>o.estadoReparto==="programado").length,
     entregado:facturados.filter(o=>o.estadoReparto==="entregado").length,
@@ -713,16 +713,22 @@ function AdminApp({ user, onLogout }) {
   };
 
   // ==== RETENIDO por renglón (falta stock) o por CCV ====
-  // Corrige cuánto salió de un renglón. Si sale menos de lo pedido, el pedido pasa a RETENIDO.
+  // Corrige cuánto salió de un renglón. SOLO cambia cantidades; NO toca el estado.
+  // La retención se confirma recién al apretar Facturado (o con el botón CCV).
   const setEntregadoLinea = async(order, idx, val)=>{
     const items = (order.items||[]).map((it,i)=> i===idx ? (val==null ? (()=>{const c={...it}; delete c.entregado; return c;})() : {...it, entregado: val}) : it);
-    const anyFalta = items.some(it=> it.entregado!=null && it.entregado!=="" && Number(it.entregado) < Number(it.qty));
-    const estado = anyFalta ? "retenido" : order.estado;
-    const upd = {...order, items, estado};
+    const upd = {...order, items};
     setOrders(prev=>prev.map(o=>o.id===order.id?upd:o));
     await apiPost("updateOrder", upd);
   };
   const marcarFaltaLinea = (order, idx)=> setEntregadoLinea(order, idx, Math.max(0, (Number(order.items[idx].qty)||1)-1));
+  // Facturar: si quedó algún renglón incompleto, pasa a RETENIDO (falta stock). Si está todo, va a Facturado.
+  const facturar = async(order)=>{
+    const hayFalta = (order.items||[]).some(it=> it.entregado!=null && it.entregado!=="" && Number(it.entregado) < Number(it.qty));
+    const estado = hayFalta ? "retenido" : "facturado";
+    setOrders(prev=>prev.map(o=>o.id===order.id?{...o,estado}:o));
+    await apiPost("updEstado",{id:order.id,estado});
+  };
   // Retener el pedido completo por Cuenta Corriente Vencida (sin tocar cantidades)
   const setCCV = async(order)=>{
     const upd = {...order, estado:"retenido"};
@@ -883,7 +889,7 @@ function AdminApp({ user, onLogout }) {
                         <button onClick={()=>updEstado(o.id,"pendiente")} style={{...sB,background:o.estado==="pendiente"?color:"#e8edf5",color:o.estado==="pendiente"?"#fff":"#555"}}>⏳</button>
                         <button onClick={()=>setCCV(o)} title="Retener por Cuenta Corriente Vencida" style={{...sB,background:(retencionDe(o)||{}).motivo==="C.C.V."?"#c62828":"#fce4ec",color:(retencionDe(o)||{}).motivo==="C.C.V."?"#fff":"#c62828"}}>💳 CCV</button>
                         {retencionDe(o)&&<button onClick={()=>quitarRetencion(o)} title="Salió todo completo" style={{...sB,background:"#e8f5e9",color:"#2e7d32"}}>🟢 Completo</button>}
-                        <button onClick={()=>updEstado(o.id,"facturado")} style={{...sB,background:o.estado==="facturado"?"#43a047":"#e8edf5",color:o.estado==="facturado"?"#fff":"#555"}}>✅ Facturado</button>
+                        <button onClick={()=>facturar(o)} title="Facturar (lo que quedó incompleto pasa a Retenido)" style={{...sB,background:o.estado==="facturado"?"#43a047":"#e8edf5",color:o.estado==="facturado"?"#fff":"#555"}}>✅ Facturado</button>
                         <button onClick={()=>setEditOrder({...o})} style={{...sB,background:"#e3f0ff",color:"#1e3a5f"}}>✏️</button>
                         <button onClick={()=>deleteOrderFn(o.id)} style={{...sB,background:"#fdecea",color:"#e53935"}}>🗑️</button>
                       </div>
@@ -1056,11 +1062,10 @@ function TipoBadge({ tipo }) {
 // Devuelve el motivo de retención de un pedido, o null.
 // Si algún renglón salió incompleto -> "SIN STOCK". Si está retenido sin faltantes -> "C.C.V.".
 function retencionDe(o){
-  const items = (o&&o.items)||[];
+  if(!o || o.estado!=="retenido") return null;   // solo cuando ya está confirmado RETENIDO (al Facturar o con CCV)
+  const items = o.items||[];
   const faltantes = items.filter(i=> i.entregado!=null && i.entregado!=="" && Number(i.entregado) < Number(i.qty));
-  if(faltantes.length) return { motivo:"SIN STOCK", faltantes };
-  if(o&&o.estado==="retenido") return { motivo:"C.C.V.", faltantes:[] };
-  return null;
+  return faltantes.length ? { motivo:"SIN STOCK", faltantes } : { motivo:"C.C.V.", faltantes:[] };
 }
 
 function EstadoBadge({ estado, estadoReparto, motivo }) {
