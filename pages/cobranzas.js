@@ -416,6 +416,127 @@ function NotaConDictado({ value, onChange, placeholder }) {
   );
 }
 
+// ===== DESCUENTOS por pago en fecha — panel informativo en la cobranza =====
+// Tabla de códigos de promoción (de codigos_promocion.csv). Actualizar si entra/sale un producto.
+const PROMO_GENERAL = new Set(["13167","13168","13166","13161","13160","13162","13163","13165","13164","13170","13171","13169","19","20","13139","13140","6","7","5","13111","22","10","13112","9","8","3","4","472","11051","471","10848","2","23","24","9601","27","28","26","25","14","533","10994","10995","12","13","11000","13144","10999","15","3204","13145","13143","17","18","13141","13142","13159"]);
+const PROMO_VALIANT = new Set(["398"]);
+const PROMO_CLEVER  = new Set(["13161","13160","13162","13163"]); // única excepción: acumula aunque tenga 5+1
+const DESC_EXCL_START = ["QUE MIRAS","ALMA BICHERA","FONOMASCOTAS","VIVOT","AMORES PERROS"];
+const DESC_EXCL_CONT  = ["MIS MASCOTAS"];
+const normU = (s) => String(s||"").normalize("NFD").replace(/[̀-ͯ]/g,"").toUpperCase().trim();
+const pctGen = (u) => u>=40?14:u>=20?11:u>=10?10:0;   // SEDA+ALIBA juntas
+const pctVal = (u) => u>=40?14:u>=1?10:0;              // Valiant
+const descExcluido = (n) => { n=normU(n); return DESC_EXCL_START.some(e=>n.startsWith(e)) || DESC_EXCL_CONT.some(e=>n.includes(e)); };
+const descAplicado = (desc, coment) => (Number(desc)||0)>0 || normU(coment).includes("APLICAD");
+function fechaISOv(v){
+  if (v==null||v==="") return "";
+  if (v instanceof Date) return v.toISOString().slice(0,10);
+  if (typeof v==="number"){ const d=XLSX.SSF.parse_date_code(v); return d?`${d.y}-${String(d.m).padStart(2,"0")}-${String(d.d).padStart(2,"0")}`:""; }
+  const s=String(v).trim();
+  let m=s.match(/^(\d{4})-(\d{2})-(\d{2})/); if(m) return `${m[1]}-${m[2]}-${m[3]}`;
+  m=s.match(/^(\d{2})\/(\d{2})\/(\d{4})/); if(m) return `${m[3]}-${m[2]}-${m[1]}`;
+  return "";
+}
+function addDiasISO(iso,n){ if(!iso) return ""; const d=new Date(iso+"T00:00:00Z"); d.setUTCDate(d.getUTCDate()+n); return d.toISOString().slice(0,10); }
+
+// Convierte el "Listado de Ventas detallado" (Sistema Visión) al resumen por comprobante.
+function parseVentasDetalle(wb){
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(ws, { header:1, defval:"" });
+  const comps=[]; let cur=null, inl=false;
+  for (const row of rows){
+    const sa = (row[0]==null?"":String(row[0])).trim();
+    const esId = sa.replace(/\s/g,"")!=="" && /^\d+$/.test(sa.replace(/\s/g,"")) && row[6]!=="" && row[6]!=null && String(row[4]||"").trim()!=="";
+    if (esId){
+      cur={ tipo:String(row[4]||"").trim(), nro:String(row[5]||"").trim(), idcli:String(row[6]||"").trim(),
+            cli:String(row[7]||"").trim(), monto:Number(row[8])||0, saldo:Number(row[9])||0,
+            fecha:fechaISOv(row[1]), desc:Number(row[31])||0,
+            coment:String(row[22]||"").replace(/_x000D_/g," ").replace(/\n/g," ").trim(), lineas:[] };
+      comps.push(cur); inl=false;
+    } else if (sa==="LINEAS"){ inl=true; }
+    else if (inl && cur && typeof row[1]==="number" && String(row[2]||"").trim()!==""){
+      cur.lineas.push([Number(row[1]), String(row[2]).trim(), String(row[3]||""), Number(row[8])||0]);
+    }
+  }
+  const out=[];
+  for (const c of comps){
+    if (descExcluido(c.cli)) continue;
+    const bonus=new Set(c.lineas.filter(l=>l[3]<=0).map(l=>l[1])); // producto con 5+1 (renglón a $0)
+    let uG=0,bG=0,uV=0,bV=0;
+    for (const [cant,cod,d,total] of c.lineas){
+      if (total<=0) continue;
+      const esG=PROMO_GENERAL.has(cod), esV=PROMO_VALIANT.has(cod);
+      if (!esG && !esV) continue;
+      if (bonus.has(cod) && !PROMO_CLEVER.has(cod)) continue; // SEDA/otros con 5+1 no acumulan; CLEVER sí
+      if (esG){ uG+=cant; bG+=total; } else { uV+=cant; bV+=total; }
+    }
+    if (uG<=0 && uV<=0) continue;
+    out.push({ idcli:c.idcli, cli:c.cli, nro:c.nro, tipo:c.tipo, fecha:c.fecha, vence:addDiasISO(c.fecha,30),
+               monto:Math.round(c.monto*100)/100, saldo:Math.round(c.saldo*100)/100,
+               uG, bG:Math.round(bG*100)/100, uV, bV:Math.round(bV*100)/100,
+               aplicado:descAplicado(c.desc,c.coment), coment:c.coment });
+  }
+  return out;
+}
+
+function estadoFecha(fecha){
+  if(!fecha) return {txt:"",c:"#475569"};
+  const d=Math.floor((Date.now()-new Date(fecha+"T00:00:00").getTime())/86400000);
+  if(d<=30) return {txt:`en fecha (${Math.max(0,30-d)} días)`,c:"#34d399"};
+  if(d<=35) return {txt:"en margen · chequear entrega",c:"#fbbf24"};
+  return {txt:"vencido",c:"#475569"};
+}
+
+// Panel que se muestra arriba del formulario de cobro. Solo informativo.
+function PanelDescuentos({ rows }){
+  if(!rows || !rows.length) return null;
+  const sorted=[...rows].sort((a,b)=>(b.fecha||"").localeCompare(a.fecha||""));
+  const pend=rows.filter(r=>!r.aplicado);
+  const uG=pend.reduce((s,r)=>s+(Number(r.uG)||0),0), uV=pend.reduce((s,r)=>s+(Number(r.uV)||0),0);
+  const bG=pend.reduce((s,r)=>s+(Number(r.bG)||0),0), bV=pend.reduce((s,r)=>s+(Number(r.bV)||0),0);
+  const chips=[];
+  if(uG>0 && pctGen(uG)>0) chips.push({t:`SEDA+ALIBA ${uG} u → ${pctGen(uG)}%`, a:bG*pctGen(uG)/100});
+  if(uV>0 && pctVal(uV)>0) chips.push({t:`Valiant ${uV} u → ${pctVal(uV)}%`, a:bV*pctVal(uV)/100});
+  return (
+    <div style={{background:"#0e1420",border:"1px solid #10b98144",borderRadius:12,padding:12,marginBottom:14}}>
+      <div style={{fontSize:11,fontWeight:800,color:"#34d399",textTransform:"uppercase",letterSpacing:".05em",marginBottom:8}}>💲 Descuentos por pago en fecha</div>
+      {sorted.map((r,i)=>{
+        const est=estadoFecha(r.fecha);
+        const pct=Math.max(pctGen(Number(r.uG)||0), pctVal(Number(r.uV)||0));
+        const units=[]; if(r.uG) units.push(`${r.uG}u SEDA+ALIBA`); if(r.uV) units.push(`${r.uV}u Valiant`);
+        const badge = r.aplicado
+          ? <span style={{fontSize:10.5,fontWeight:700,color:"#60a5fa",background:"#1e3a8a22",border:"1px solid #60a5fa44",padding:"2px 8px",borderRadius:99,whiteSpace:"nowrap"}}>ya aplicado</span>
+          : pct>0 ? <span style={{fontSize:11.5,fontWeight:800,color:"#34d399",background:"#06522233",border:"1px solid #10b98155",padding:"2px 9px",borderRadius:99}}>{pct}%</span>
+          : <span style={{fontSize:10.5,color:"#475569",padding:"2px 6px"}}>sin desc.</span>;
+        return (
+          <div key={i} style={{padding:"7px 0",borderTop:i?"1px solid rgba(255,255,255,.05)":"none"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",gap:8}}>
+              <span style={{fontSize:12,fontFamily:"monospace",color:"#e2e8f0",fontWeight:700}}>{r.nro} <span style={{fontSize:10,color:"#64748b"}}>{r.tipo}</span></span>
+              <span style={{fontSize:12.5,fontFamily:"monospace",color:"#fbbf24",fontWeight:800,whiteSpace:"nowrap"}}>{fmt(r.monto)}</span>
+            </div>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:3,gap:8}}>
+              <span style={{fontSize:10.5,color:"#64748b"}}>{units.join(" · ")}{r.fecha?" · ":""}<span style={{color:est.c,fontWeight:600}}>{est.txt}</span></span>
+              {badge}
+            </div>
+          </div>
+        );
+      })}
+      {chips.length>0 && (
+        <div style={{marginTop:10,background:"#10261b",border:"1px solid #10b98155",borderRadius:10,padding:"9px 11px"}}>
+          <div style={{fontSize:11.5,fontWeight:800,color:"#34d399",marginBottom:6}}>💡 Si paga junto mejora</div>
+          {chips.map((c,i)=>(
+            <div key={i} style={{display:"flex",justifyContent:"space-between",gap:8,fontSize:12,padding:"3px 0"}}>
+              <span style={{color:"#e2e8f0"}}>{c.t}</span>
+              <span style={{color:"#34d399",fontWeight:800,fontFamily:"monospace",whiteSpace:"nowrap"}}>ahorra {fmt(c.a)}</span>
+            </div>
+          ))}
+          <div style={{fontSize:10,color:"#64748b",marginTop:6}}>Las facturas que ya tienen el descuento aplicado no entran acá.</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function DeudoresTab({ isAdmin }) {
   const [clientes, setClientes] = useState([]);
   const [cobros, setCobros] = useState([]);
@@ -428,15 +549,17 @@ function DeudoresTab({ isAdmin }) {
   const [editCobro, setEditCobro] = useState(null);
   const [form, setForm] = useState({});
   const [saving, setSaving] = useState(false);
+  const [descuentos, setDescuentos] = useState([]);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [rd, rc, rv, rcomp] = await Promise.all([
+      const [rd, rc, rv, rcomp, rdes] = await Promise.all([
         apiGet({action:"getData",sheet:"Deudores"}),
         apiGet({action:"getData",sheet:"Cobros"}),
         apiGet({action:"getData",sheet:"Visitas"}),
         apiGet({action:"getData",sheet:"Comprobantes"}),
+        apiGet({action:"getData",sheet:"Descuentos"}),
       ]);
       const deudores = Array.isArray(rd.data) ? rd.data : [];
       const comp = Array.isArray(rcomp.data) ? rcomp.data : [];
@@ -452,6 +575,7 @@ function DeudoresTab({ isAdmin }) {
       setClientes(clientesConDias);
       setCobros(Array.isArray(rc.data) ? rc.data : []);
       setVisitas(Array.isArray(rv.data) ? rv.data : []);
+      setDescuentos(Array.isArray(rdes.data) ? rdes.data : []);
     } catch(e) { console.error(e); }
     finally { setLoading(false); }
   }, []);
@@ -677,6 +801,7 @@ function DeudoresTab({ isAdmin }) {
         <div style={{fontSize:12,color:"#94a3b8"}}>Categoría detectada automáticamente</div>
         <div style={{marginTop:4}}><DiaBadge dias={modalCobro.dias} /> <span style={{fontSize:12,color:"#64748b",marginLeft:8}}>Saldo total: {fmt(modalCobro.saldo)}</span></div>
       </div>
+      <PanelDescuentos rows={descuentos.filter(d => String(d.idcli) === String(modalCobro.codigo))} />
       <Field label="Monto cobrado *"><input style={S.input} type="number" value={form.monto||""} onChange={e=>setForm(p=>({...p,monto:e.target.value}))} placeholder="0" autoFocus /></Field>
       <Field label="Forma de pago *">
         <select style={S.input} value={form.formaPago||""} onChange={e=>setForm(p=>({...p,formaPago:e.target.value}))}>
@@ -929,7 +1054,7 @@ function ClientesTab() {
 function ImportarTab() {
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(false);
-  const refCli = useRef(), refDeu = useRef();
+  const refCli = useRef(), refDeu = useRef(), refDes = useRef();
 
   const importarClientes = async (file) => {
     setLoading(true); setStatus(null);
@@ -953,6 +1078,33 @@ function ImportarTab() {
       await apiPost({action:"bulkUpsert",sheet:"Deudores",rows:deudores});
       await apiPost({action:"clearAndInsert",sheet:"Comprobantes",rows:comprobantes});
       setStatus({type:"success", msg:`✅ ${deudores.length} deudores actualizados, ${comprobantes.length} comprobantes cargados`});
+    } catch(e) { setStatus({type:"error",msg:"❌ "+e.message}); }
+    finally { setLoading(false); }
+  };
+
+  const importarDescuentos = async (file) => {
+    setLoading(true); setStatus(null);
+    try {
+      const wb = XLSX.read(await file.arrayBuffer());
+      const nuevos = parseVentasDetalle(wb);
+      if (!nuevos.length) throw new Error("No se encontraron comprobantes con descuento — ¿es el Listado de Ventas detallado?");
+      // Traer lo que ya está cargado y MEZCLAR por N° de comprobante (los nuevos pisan a los viejos)
+      const actualRes = await apiGet({action:"getData",sheet:"Descuentos"});
+      const actuales = Array.isArray(actualRes.data) ? actualRes.data : [];
+      const porNro = new Map();
+      for (const c of actuales) if (c.nro) porNro.set(String(c.nro), c);
+      for (const c of nuevos)   if (c.nro) porNro.set(String(c.nro), c);
+      // Descartar automáticamente los que superan los 35 días (quedan solo los vigentes)
+      const hoy = Date.now();
+      const vigentes = [...porNro.values()].filter(c => {
+        if (!c.fecha) return false;
+        const dias = Math.floor((hoy - new Date(String(c.fecha).slice(0,10) + "T00:00:00").getTime()) / 86400000);
+        return dias <= 35;
+      });
+      await apiPost({action:"clearAndInsert",sheet:"Descuentos",rows:vigentes});
+      const clientes = new Set(vigentes.map(r=>r.idcli)).size;
+      const descartados = porNro.size - vigentes.length;
+      setStatus({type:"success", msg:`✅ Listo. Quedaron ${vigentes.length} comprobantes vigentes (${clientes} clientes). Se sumó la semana nueva y se descartaron ${descartados} por pasar los 35 días.`});
     } catch(e) { setStatus({type:"error",msg:"❌ "+e.message}); }
     finally { setLoading(false); }
   };
@@ -981,6 +1133,20 @@ function ImportarTab() {
         </div>
         <input ref={refDeu} type="file" accept=".xlsx,.xls" style={{display:"none"}} onChange={e=>e.target.files[0]&&importarDeudores(e.target.files[0])} />
         <button style={{...S.btnPri,opacity:loading?0.5:1}} disabled={loading} onClick={()=>refDeu.current?.click()}>📂 Seleccionar Excel</button>
+      </div>
+    </div>
+    <div style={S.card}>
+      <div style={{padding:"14px 18px",borderBottom:"1px solid rgba(255,255,255,.07)"}}>
+        <div style={{fontWeight:700,color:"#fff",fontSize:14}}>💲 Importar Descuentos (detallado 35 días)</div>
+        <div style={{fontSize:12,color:"#475569",marginTop:3}}>Listado de Ventas detallado del Sistema Visión — para el panel de descuentos del vendedor</div>
+      </div>
+      <div style={{padding:18}}>
+        <div style={{...S.card,padding:12,marginBottom:14,background:"#06522210",border:"1px solid #10b98133"}}>
+          <p style={{fontSize:12,color:"#34d399",margin:0,fontWeight:600}}>Subí solo la ÚLTIMA SEMANA</p>
+          <p style={{fontSize:11,color:"#475569",margin:"4px 0 0"}}>Se suma a lo que ya hay y se descartan solos los de más de 35 días. No toca la deuda ni los cobros.</p>
+        </div>
+        <input ref={refDes} type="file" accept=".xlsx,.xls" style={{display:"none"}} onChange={e=>e.target.files[0]&&importarDescuentos(e.target.files[0])} />
+        <button style={{...S.btnPri,opacity:loading?0.5:1}} disabled={loading} onClick={()=>refDes.current?.click()}>📂 Seleccionar Excel</button>
       </div>
     </div>
     {loading && <div style={{...S.card,padding:16,textAlign:"center",color:"#fbbf24"}}>⏳ Procesando…</div>}
