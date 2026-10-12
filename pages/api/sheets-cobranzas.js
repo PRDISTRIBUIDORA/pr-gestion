@@ -31,6 +31,9 @@ const TABLES = {
   Cobranzas:    { table: "cobranzas",    cols: ["codigo","cliente","monto","fecha_vencimiento","estado","cobrador","notas"],
                   num: ["monto"], int: [], date: ["fecha_vencimiento"],
                   map: { fechaVencimiento: "fecha_vencimiento" } },
+  Descuentos:   { table: "descuentos",   cols: ["idcli","cli","nro","tipo","fecha","vence","monto","saldo","ug","bg","uv","bv","aplicado","coment"],
+                  num: ["monto","saldo","bg","bv"], int: ["ug","uv"], date: ["fecha","vence"],
+                  map: { uG: "ug", bG: "bg", uV: "uv", bV: "bv" } },
 };
 
 function coerce(cfg, key, val) {
